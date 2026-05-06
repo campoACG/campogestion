@@ -423,13 +423,20 @@ function showModal(title,html,wide){
     </div>
     <div id="modal-body">${html}</div>
   </div>`;
-  o.addEventListener('click',e=>{if(e.target===o)closeModal()});
+  // NO se cierra al hacer clic afuera — solo con el botón ✕ o los botones del modal
+  // Esto previene perder lo cargado por error
   document.body.appendChild(o);
 }
 
 // ── Confirmación personalizada (reemplaza confirm() del navegador) ──────────
-function confirmar(mensaje){
+function confirmar(mensaje, opciones){
   return new Promise(resolve=>{
+    // Opciones: { textoConfirmar, tipoConfirmar ('danger'|'primary') }
+    opciones = opciones || {};
+    const textoConfirmar = opciones.textoConfirmar || 'Eliminar';
+    const tipoConfirmar = opciones.tipoConfirmar || 'danger';
+    const claseBtn = tipoConfirmar === 'primary' ? 'btn-primary' : 'btn-danger';
+
     // Cerramos cualquier modal abierto antes de mostrar el de confirmación
     const existing=document.getElementById('confirm-overlay');
     if(existing) existing.remove();
@@ -442,12 +449,13 @@ function confirmar(mensaje){
       <div style="font-size:15px;font-weight:600;margin-bottom:18px;line-height:1.5">${esc(mensaje)}</div>
       <div class="row" style="justify-content:flex-end;gap:8px">
         <button class="btn-secondary" id="confirm-no">Cancelar</button>
-        <button class="btn-danger" id="confirm-yes">Eliminar</button>
+        <button class="${claseBtn}" id="confirm-yes">${esc(textoConfirmar)}</button>
       </div>
     </div>`;
     document.body.appendChild(o);
     document.getElementById('confirm-yes').onclick=()=>{o.remove();resolve(true)};
     document.getElementById('confirm-no').onclick=()=>{o.remove();resolve(false)};
+    // Click afuera cierra (este modal de confirmación SÍ se puede cerrar afuera porque es chico)
     o.addEventListener('click',e=>{if(e.target===o){o.remove();resolve(false)}});
   });
 }
@@ -2206,7 +2214,7 @@ let editandoOrdenNumero = null;
 async function editarOrden(id){
   const o = S.ordenes.find(x => x.id === id);
   if (!o) return;
-  if (!await confirmar(`Editar la orden ${o.numero}. El stock se restablecerá temporalmente para que puedas modificar la orden. Al guardar, se aplicarán los cambios. ¿Continuar?`)) return;
+  if (!await confirmar(`Editar la orden ${o.numero}. El stock se restablecerá temporalmente para que puedas modificar la orden. Al guardar, se aplicarán los cambios. ¿Continuar?`, {textoConfirmar:'Continuar editando', tipoConfirmar:'primary'})) return;
 
   // 1) Devolver el stock al establecimiento (como si eliminamos la orden)
   const devoluciones = {};
@@ -3309,7 +3317,7 @@ async function restaurarPapelera(itemId){
   // Verificar si ya existe uno con ese ID (raro pero por las dudas)
   const existe = (S[arrayName] || []).some(x => x.id === item.datos.id);
   if (existe){
-    if (!await confirmar('Ya existe un elemento con el mismo ID. ¿Restaurar de todas formas? Se actualizará el existente.')) return;
+    if (!await confirmar('Ya existe un elemento con el mismo ID. ¿Restaurar de todas formas? Se actualizará el existente.', {textoConfirmar:'Restaurar', tipoConfirmar:'primary'})) return;
     S[arrayName] = (S[arrayName] || []).map(x => x.id === item.datos.id ? item.datos : x);
   } else {
     S[arrayName] = [item.datos, ...(S[arrayName] || [])];
