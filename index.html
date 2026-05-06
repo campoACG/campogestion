@@ -2217,49 +2217,21 @@ let editandoOrdenNumero = null;
 async function editarOrden(id){
   const o = S.ordenes.find(x => x.id === id);
   if (!o) return;
-  if (!await confirmar(`Editar la orden ${o.numero}. El stock se restablecerá temporalmente para que puedas modificar la orden. Al guardar, se aplicarán los cambios. ¿Continuar?`, {textoConfirmar:'Continuar editando', tipoConfirmar:'primary'})) return;
+  if (!await confirmar(`¿Editar la orden ${o.numero}?`, {textoConfirmar:'Continuar editando', tipoConfirmar:'primary'})) return;
 
-  // 1) Devolver el stock al establecimiento (como si eliminamos la orden)
-  const devoluciones = {};
-  if (o.bloques && o.bloques.length > 0){
-    for (const b of o.bloques){
-      for (const item of b.items){
-        if (!item.insumoId) continue;
-        devoluciones[item.insumoId] = (devoluciones[item.insumoId] || 0) + Number(item.cantidad);
-      }
-    }
-  } else if (o.items && o.items.length > 0){
-    for (const item of o.items){
-      if (!item.insumoId) continue;
-      devoluciones[item.insumoId] = (devoluciones[item.insumoId] || 0) + Number(item.cantidad);
-    }
-  }
-  S.insumos = S.insumos.map(ins => {
-    if (devoluciones[ins.id]){
-      return { ...ins, stockEstab: Number(ins.stockEstab) + devoluciones[ins.id] };
-    }
-    return ins;
-  });
-
-  // 2) Guardar id, número y datos originales para preservarlos al guardar
+  // GUARDAR REFERENCIA — NO modificamos el estado todavía.
+  // El stock se ajustará SOLO cuando el usuario guarde.
   editandoOrdenId = o.id;
   editandoOrdenNumero = o.numero;
   window._editOrigData = {
     contratista: o.contratista,
     fecha: o.fecha,
     descripcion: o.descripcion,
-    documento: o.documento
+    documento: o.documento,
+    fechaCreacion: o.fechaCreacion
   };
 
-  // 3) Si tenía remito asociado, lo quitamos para que no quede duplicado
-  if (o.documento && o.documento.tipo === 'remito'){
-    S.remitos = S.remitos.filter(r => !(r.numero === o.documento.numero && (r.proveedor||'').includes(`Orden ${o.numero}`)));
-  }
-
-  // 4) Eliminar la orden (la vamos a recrear con saveNewOrden)
-  S.ordenes = S.ordenes.filter(x => x.id !== id);
-
-  // 5) Pre-cargar los datos en el formulario
+  // Pre-cargar los datos en el formulario (sin tocar la orden original)
   ordenBloques = [];
   lotesSuperficies = {};
   if (o.bloques && o.bloques.length > 0){
@@ -2298,23 +2270,20 @@ async function editarOrden(id){
     }
   }
 
-  // 6) Abrir el modal con los datos cargados
+  // Abrir el modal con los datos cargados
   openNewOrden(true);  // true = modo edición
-  toast('Editando orden — al guardar se aplicarán los cambios');
 }
 
 function cancelarEdicionOrden(){
-  // Si se cancela una edición, hay que volver a descontar el stock que devolvimos
-  // y restaurar la orden original. Pero como ya la borramos, lo más simple es avisar.
-  // Mejor: si el usuario cancela, mantenemos el cambio (la orden eliminada queda eliminada
-  // y el stock devuelto). Es como si hubieras eliminado la orden.
+  // No hay nada que restaurar — nunca modificamos el estado.
+  // Solo limpiamos las variables temporales y cerramos el modal.
   editandoOrdenId = null;
   editandoOrdenNumero = null;
+  window._editOrigData = null;
   ordenBloques = [];
   lotesSuperficies = {};
   closeModal();
-  saveState();
-  render();
+  toast('Edición cancelada');
 }
 
 
@@ -2814,6 +2783,26 @@ function saveNewOrden(){
     }
   }
 
+  // Si estamos editando, calcular el stock que se devolvería al "deshacer" la orden original.
+  // Esto se usa para validación de stock ANTES de aplicar cambios.
+  const ordenAnterior = editandoOrdenId ? S.ordenes.find(x => x.id === editandoOrdenId) : null;
+  const stockDevueltoVirtual = {};  // {insumoId: cantidad que se devolvería al deshacer}
+  if (ordenAnterior){
+    if (ordenAnterior.bloques && ordenAnterior.bloques.length > 0){
+      for (const b of ordenAnterior.bloques){
+        for (const item of b.items){
+          if (!item.insumoId) continue;
+          stockDevueltoVirtual[item.insumoId] = (stockDevueltoVirtual[item.insumoId] || 0) + Number(item.cantidad);
+        }
+      }
+    } else if (ordenAnterior.items && ordenAnterior.items.length > 0){
+      for (const item of ordenAnterior.items){
+        if (!item.insumoId) continue;
+        stockDevueltoVirtual[item.insumoId] = (stockDevueltoVirtual[item.insumoId] || 0) + Number(item.cantidad);
+      }
+    }
+  }
+
   // Construir bloques con detalle calculado
   const bloquesData=[];
   let supGlobal=0;
@@ -2852,11 +2841,13 @@ function saveNewOrden(){
   }
 
   // Verificar stock global contra consolidado
+  // Si estamos editando, sumamos el stock que se devolvería al deshacer la orden vieja
   for(const insId in consolidadoStock){
     const ins=S.insumos.find(x=>x.id===insId);
     if(!ins) continue;
-    if(consolidadoStock[insId]>Number(ins.stockEstab)){
-      return toast(`Stock insuficiente: ${ins.nombre} (necesita ${fmtN(consolidadoStock[insId])} ${ins.unidad}, hay ${fmtN(ins.stockEstab)})`,'danger');
+    const stockDisponible = Number(ins.stockEstab) + (stockDevueltoVirtual[insId] || 0);
+    if(consolidadoStock[insId] > stockDisponible){
+      return toast(`Stock insuficiente: ${ins.nombre} (necesita ${fmtN(consolidadoStock[insId])} ${ins.unidad}, hay ${fmtN(stockDisponible)})`,'danger');
     }
   }
 
@@ -2867,6 +2858,23 @@ function saveNewOrden(){
   let docTxt='';
   if(docTipo==='remito') docTxt=`Remito ${docNum}`;
   else if(docTipo==='carta') docTxt=`Carta de Porte ${docNum}`;
+
+  // === SI ESTAMOS EDITANDO: primero deshacemos los efectos de la orden vieja ===
+  if (ordenAnterior){
+    // 1) Devolver el stock viejo
+    S.insumos = S.insumos.map(ins => {
+      if (stockDevueltoVirtual[ins.id]){
+        return { ...ins, stockEstab: Number(ins.stockEstab) + stockDevueltoVirtual[ins.id] };
+      }
+      return ins;
+    });
+    // 2) Eliminar remitos asociados a la orden vieja (si los tenía)
+    if (ordenAnterior.documento && ordenAnterior.documento.tipo === 'remito'){
+      S.remitos = S.remitos.filter(r => !(r.numero === ordenAnterior.documento.numero && (r.proveedor||'').includes(`Orden ${ordenAnterior.numero}`)));
+    }
+    // 3) Eliminar la orden vieja del listado (la vamos a recrear más abajo)
+    S.ordenes = S.ordenes.filter(x => x.id !== editandoOrdenId);
+  }
 
   // Descontar stock y registrar movimientos (uno por bloque, por lote, por insumo, para trazabilidad)
   const updates={};
