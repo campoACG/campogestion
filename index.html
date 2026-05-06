@@ -2712,9 +2712,34 @@ function actualizarTotales(){
     return;
   }
 
-  // Verificar stock contra el consolidado
+  // Si estamos editando una orden, calcular el stock que se "devolvería" al deshacer la orden vieja
+  // Esto es necesario para que la alerta visual de stock no marque error si el stock alcanza
+  // gracias a lo que se devuelve de la orden original.
+  const stockDevueltoVirtual = {};
+  if (editandoOrdenId){
+    const ordenAnterior = S.ordenes.find(x => x.id === editandoOrdenId);
+    if (ordenAnterior){
+      if (ordenAnterior.bloques && ordenAnterior.bloques.length > 0){
+        for (const b of ordenAnterior.bloques){
+          for (const item of (b.items || [])){
+            if (!item.insumoId) continue;
+            stockDevueltoVirtual[item.insumoId] = (stockDevueltoVirtual[item.insumoId] || 0) + Number(item.cantidad);
+          }
+        }
+      } else if (ordenAnterior.items && ordenAnterior.items.length > 0){
+        for (const item of ordenAnterior.items){
+          if (!item.insumoId) continue;
+          stockDevueltoVirtual[item.insumoId] = (stockDevueltoVirtual[item.insumoId] || 0) + Number(item.cantidad);
+        }
+      }
+    }
+  }
+
+  // Verificar stock contra el consolidado, considerando el stock virtual a devolver
   const filasConsol = Object.values(consolidado).map(c=>{
-    return {...c, stockOK: c.total <= c.stockEstab};
+    const insId = Object.keys(consolidado).find(k => consolidado[k] === c);
+    const stockDisponible = c.stockEstab + (stockDevueltoVirtual[insId] || 0);
+    return {...c, stockDisponible, stockOK: c.total <= stockDisponible};
   });
 
   cont.style.display='block';
@@ -2747,7 +2772,7 @@ function actualizarTotales(){
         ${filasConsol.map(f=>`<tr>
           <td style="padding:6px;border-bottom:1px solid var(--border)"><b>${esc(f.nombre)}</b>${f.categoria?`<br><span style="font-size:10px;color:var(--muted)">${esc(f.categoria)}</span>`:''}</td>
           <td class="mono" style="text-align:right;padding:6px;border-bottom:1px solid var(--border);font-weight:700;color:${f.stockOK?'var(--accent)':'var(--danger)'}">${fmtN(f.total)} ${esc(f.unidad)}</td>
-          <td class="mono" style="text-align:right;padding:6px;border-bottom:1px solid var(--border);font-size:11px;color:${f.stockOK?'var(--muted)':'var(--danger)'}">${f.stockOK?'✓':'✗'} ${fmtN(f.stockEstab)}</td>
+          <td class="mono" style="text-align:right;padding:6px;border-bottom:1px solid var(--border);font-size:11px;color:${f.stockOK?'var(--muted)':'var(--danger)'}">${f.stockOK?'✓':'✗'} ${fmtN(f.stockDisponible)}</td>
         </tr>`).join('')}
       </tbody>
     </table>`;
