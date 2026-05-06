@@ -133,6 +133,9 @@ tr:last-child td{border-bottom:none}
   <button class="nav-btn" data-tab="ordenes" onclick="switchTab('ordenes')">
     <span class="nav-icon">📋</span>Órdenes
   </button>
+  <button class="nav-btn" data-tab="papelera" onclick="switchTab('papelera')">
+    <span class="nav-icon">🗑️</span>Papelera
+  </button>
   <button class="nav-btn" data-tab="usuarios" onclick="switchTab('usuarios')" style="display:none">
     <span class="nav-icon">👥</span>Usuarios
   </button>
@@ -256,6 +259,7 @@ const INIT = {
   variedades:[],
   servicios:['Fumigación','Siembra','Cosecha','Fertilización','Labranza','Pulverización','Otro'],
   proveedores:[],
+  papelera:[],
   settings:{gsSheetId:'',gsApiKey:'',establecimiento:''}
 };
 
@@ -313,6 +317,7 @@ function snapshotEstado(s){
     unidadesUP: s.unidadesUP || [],
     servicios: s.servicios || [],
     proveedores: s.proveedores || [],
+    papelera: s.papelera || [],
   };
 }
 
@@ -331,6 +336,7 @@ const ENTIDAD_MAP = {
   unidadesUP:     { tipo:'lista',  entidad:'unidadUP' },
   servicios:      { tipo:'lista',  entidad:'servicio' },
   proveedores:    { tipo:'objeto', entidad:'proveedor' },
+  papelera:       { tipo:'objeto', entidad:'papelera' },
 };
 
 function detectarCambios(prev, curr){
@@ -454,6 +460,7 @@ function render(){
   else if(currentTab==='contratistas') m.innerHTML=renderContratistas();
   else if(currentTab==='ordenes') m.innerHTML=renderOrdenes();
   else if(currentTab==='usuarios') m.innerHTML=renderUsuarios();
+  else if(currentTab==='papelera') m.innerHTML=renderPapelera();
 }
 
 // ── Estado de filtros (persiste mientras dura la sesión) ─────────────────────
@@ -738,8 +745,11 @@ function saveEditInsumo(id){
 }
 
 async function delInsumo(id){
-  if(!await confirmar('¿Eliminar insumo?'))return;
-  S.insumos=S.insumos.filter(x=>x.id!==id);saveState();render();toast('Insumo eliminado');
+  if(!await confirmar('¿Enviar este insumo a la papelera? Podrás recuperarlo desde 🗑️ Papelera.'))return;
+  const ins = S.insumos.find(x=>x.id===id);
+  if (ins) moverAPapelera('insumo', ins);
+  S.insumos=S.insumos.filter(x=>x.id!==id);
+  saveState();render();toast('Insumo enviado a papelera');
 }
 
 // ── Gestión de proveedores ───────────────────────────────────────────────────
@@ -900,14 +910,15 @@ async function eliminarProveedor(id){
   if (!p) return;
   const enUso = S.insumos.filter(x => x.proveedor === p.nombre).length;
   if (enUso > 0){
-    if (!await confirmar(`Hay ${enUso} ${enUso===1?'insumo asociado':'insumos asociados'} a "${p.nombre}". Si lo eliminás, esos insumos quedarán sin proveedor. ¿Continuar?`)) return;
+    if (!await confirmar(`Hay ${enUso} ${enUso===1?'insumo asociado':'insumos asociados'} a "${p.nombre}". Si lo enviás a la papelera, esos insumos quedarán sin proveedor. ¿Continuar?`)) return;
     S.insumos = S.insumos.map(i => i.proveedor === p.nombre ? {...i, proveedor: ''} : i);
   } else {
-    if (!await confirmar(`¿Eliminar el proveedor "${p.nombre}"?`)) return;
+    if (!await confirmar(`¿Enviar el proveedor "${p.nombre}" a la papelera?`)) return;
   }
+  moverAPapelera('proveedor', p);
   S.proveedores = S.proveedores.filter(x => x.id !== id);
   saveState();
-  toast('Proveedor eliminado');
+  toast('Proveedor enviado a papelera');
   renderProveedoresModal();
 }
 
@@ -1537,8 +1548,11 @@ function saveEditLote(id){
 }
 
 async function delLote(id){
-  if(!await confirmar('¿Eliminar esta unidad productiva?'))return;
-  S.lotes=S.lotes.filter(x=>x.id!==id);saveState();render();toast('Unidad Productiva eliminada');
+  if(!await confirmar('¿Enviar esta unidad productiva a la papelera? Podrás recuperarla desde 🗑️ Papelera.'))return;
+  const l = S.lotes.find(x=>x.id===id);
+  if (l) moverAPapelera('lote', l);
+  S.lotes=S.lotes.filter(x=>x.id!==id);
+  saveState();render();toast('Unidad Productiva enviada a papelera');
 }
 
 // ── Gestión de listas U.P. (establecimientos, tipos, unidades) ───────────────
@@ -1871,8 +1885,11 @@ function saveEditContratista(id){
 }
 
 async function delContratista(id){
-  if(!await confirmar('¿Eliminar contratista?'))return;
-  S.contratistas=S.contratistas.filter(x=>x.id!==id);saveState();render();toast('Contratista eliminado');
+  if(!await confirmar('¿Enviar contratista a la papelera? Podrás recuperarlo desde 🗑️ Papelera.'))return;
+  const c = S.contratistas.find(x=>x.id===id);
+  if (c) moverAPapelera('contratista', c);
+  S.contratistas=S.contratistas.filter(x=>x.id!==id);
+  saveState();render();toast('Contratista enviado a papelera');
 }
 
 // ── Gestión de servicios ─────────────────────────────────────────────────────
@@ -1993,8 +2010,47 @@ function renderOrdenes(){
     const servicio = cont ? cont.servicio : '';
 
     let bloquesHtml = '';
+    let consolidadoOrden = {}; // {insumoId: {nombre, cat, unidad, total}}
+
     if (o.bloques && o.bloques.length > 0){
       bloquesHtml = o.bloques.map(b => {
+        // Detectar si la orden usa la estructura nueva (items por lote)
+        const usaItemsPorLote = b.lotesDetalle && b.lotesDetalle.some(ld => ld.items && ld.items.length > 0);
+
+        if (usaItemsPorLote){
+          // NUEVA ESTRUCTURA: cada lote tiene sus propios insumos
+          const lotesHtml = b.lotesDetalle.map(ld => {
+            const l = S.lotes.find(x => x.id === ld.id);
+            const loteNom = l ? l.nombre : '(U.P. eliminada)';
+            const supLabel = (ld.supAplicada !== ld.supOriginal)
+              ? `<span style="color:var(--warn);font-size:11px">(${fmtN(ld.supAplicada)}/${fmtN(ld.supOriginal)} ha)</span>`
+              : `<span style="color:var(--muted);font-size:11px">${fmtN(ld.supAplicada)} ha</span>`;
+            const itemsHtml = (ld.items || []).map(it => {
+              const ins = S.insumos.find(x => x.id === it.insumoId);
+              const nom = ins ? ins.nombre : '(insumo eliminado)';
+              const cat = ins ? ins.categoria : '';
+              // Acumular en consolidado de la orden
+              if (!consolidadoOrden[it.insumoId]){
+                consolidadoOrden[it.insumoId] = {nombre:nom, cat, unidad:it.unidad, total:0};
+              }
+              consolidadoOrden[it.insumoId].total += Number(it.cantidad);
+              return `<div style="display:flex;justify-content:space-between;padding:1px 0;font-size:11px">
+                <span>${esc(nom)}${cat?` <span style="font-size:9px;color:var(--muted)">— ${esc(cat)}</span>`:''}</span>
+                <span class="mono" style="color:var(--muted)">${fmtN(it.dosis)} ${esc(it.unidad)}/ha · <b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(it.unidad)}</b></span>
+              </div>`;
+            }).join('');
+            return `<div style="background:var(--surface);border-radius:4px;padding:6px;margin-top:4px;border-left:2px solid var(--accent)">
+              <div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:2px">📍 ${esc(loteNom)} ${supLabel}</div>
+              ${itemsHtml || '<div style="font-size:10px;color:var(--muted);font-style:italic">Sin insumos</div>'}
+            </div>`;
+          }).join('');
+          return `<div style="background:var(--bg);border-radius:6px;padding:10px;margin-bottom:8px">
+            <div style="font-size:12px;color:var(--accent);font-weight:700;margin-bottom:4px">🏡 ${esc(b.estabNombre)} <span style="color:var(--muted);font-weight:400;font-size:11px">— ${fmtN(b.supTotal)} ha</span></div>
+            ${lotesHtml}
+          </div>`;
+        }
+
+        // ESTRUCTURA VIEJA: items compartidos por todos los lotes del bloque
         const lotesNom = b.lotes.map(lid => {
           const l = S.lotes.find(x => x.id === lid);
           if (!l) return '(U.P. eliminada)';
@@ -2007,8 +2063,14 @@ function renderOrdenes(){
         const itemsHtml = b.items.length > 0 ? b.items.map(it => {
           const ins = S.insumos.find(x => x.id === it.insumoId);
           const nom = ins ? ins.nombre : '(insumo eliminado)';
+          const cat = ins ? ins.categoria : '';
+          // Acumular en consolidado
+          if (!consolidadoOrden[it.insumoId]){
+            consolidadoOrden[it.insumoId] = {nombre:nom, cat, unidad:it.unidad, total:0};
+          }
+          consolidadoOrden[it.insumoId].total += Number(it.cantidad);
           return `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px">
-            <span>${esc(nom)}</span>
+            <span>${esc(nom)}${cat?` <span style="font-size:10px;color:var(--muted)">— ${esc(cat)}</span>`:''}</span>
             <span class="mono" style="color:var(--muted)">${fmtN(it.dosis)} ${esc(it.unidad)}/ha · <b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(it.unidad)}</b></span>
           </div>`;
         }).join('') : '<div style="font-size:11px;color:var(--muted);font-style:italic">Sin insumos aplicados</div>';
@@ -2018,6 +2080,19 @@ function renderOrdenes(){
           ${itemsHtml}
         </div>`;
       }).join('');
+
+      // Agregar el resumen consolidado de la orden si tiene varios bloques o lotes con distintos insumos
+      const consolidadoArray = Object.values(consolidadoOrden);
+      if (consolidadoArray.length > 0){
+        const totalRows = consolidadoArray.map(c=>`<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:12px">
+          <span>${esc(c.nombre)}${c.cat?` <span style="font-size:10px;color:var(--muted)">— ${esc(c.cat)}</span>`:''}</span>
+          <span class="mono"><b style="color:var(--accent)">${fmtN(c.total)} ${esc(c.unidad)}</b></span>
+        </div>`).join('');
+        bloquesHtml += `<div style="background:linear-gradient(135deg,var(--surface),var(--card));border:1.5px solid var(--accent);border-radius:8px;padding:10px;margin-bottom:8px">
+          <div style="font-size:11px;color:var(--accent);font-weight:800;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 Total general de la orden</div>
+          ${totalRows}
+        </div>`;
+      }
     } else {
       // Compatibilidad con órdenes viejas
       const lotesData = S.lotes.filter(l => o.lotes?.includes(l.id));
@@ -2034,11 +2109,12 @@ function renderOrdenes(){
           ${o.items.map(it => {
             const ins = S.insumos.find(x => x.id === it.insumoId);
             const nom = ins ? ins.nombre : '(insumo eliminado)';
+            const cat = ins ? ins.categoria : '';
             const u = it.unidad || (ins ? ins.unidad : '');
             if (it.dosis !== undefined){
-              return `<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${esc(nom)}</span><span class="mono" style="color:var(--muted)">${fmtN(it.dosis)} ${esc(u)}/ha · <b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(u)}</b></span></div>`;
+              return `<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${esc(nom)}${cat?` <span style="font-size:10px;color:var(--muted)">— ${esc(cat)}</span>`:''}</span><span class="mono" style="color:var(--muted)">${fmtN(it.dosis)} ${esc(u)}/ha · <b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(u)}</b></span></div>`;
             }
-            return `<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${esc(nom)}</span><span class="mono"><b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(u)}</b></span></div>`;
+            return `<div style="display:flex;justify-content:space-between;padding:3px 0"><span>${esc(nom)}${cat?` <span style="font-size:10px;color:var(--muted)">— ${esc(cat)}</span>`:''}</span><span class="mono"><b style="color:var(--text)">${fmtN(it.cantidad)} ${esc(u)}</b></span></div>`;
           }).join('')}
         </div>`:'';
       bloquesHtml = `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">${lotesTxt}</div>${insumosHtml}`;
@@ -2180,17 +2256,34 @@ async function editarOrden(id){
       const bloque = {
         estabNombre: b.estabNombre,
         lotes: new Set(b.lotes),
-        items: b.items.map(it => ({ insumoId: it.insumoId, dosis: String(it.dosis||'') }))
+        itemsPorLote: {}
       };
-      ordenBloques.push(bloque);
       // Restaurar superficies override
       if (b.lotesDetalle){
         for (const det of b.lotesDetalle){
           if (det.supAplicada !== det.supOriginal){
             lotesSuperficies[det.id] = det.supAplicada;
           }
+          // Si el detalle tiene items por lote (estructura nueva), los cargamos
+          if (det.items && det.items.length > 0){
+            bloque.itemsPorLote[det.id] = det.items.map(it => ({
+              insumoId: it.insumoId,
+              dosis: String(it.dosis || '')
+            }));
+          }
         }
       }
+      // Compatibilidad: si la orden vieja tenía items en el bloque (todos los lotes), los aplicamos a TODOS los lotes
+      const tieneItemsPorLote = Object.keys(bloque.itemsPorLote).length > 0;
+      if (!tieneItemsPorLote && b.items && b.items.length > 0){
+        for (const lid of bloque.lotes){
+          bloque.itemsPorLote[lid] = b.items.map(it => ({
+            insumoId: it.insumoId,
+            dosis: String(it.dosis || '')
+          }));
+        }
+      }
+      ordenBloques.push(bloque);
     }
   }
 
@@ -2337,7 +2430,7 @@ function renderAgregarEstab(){
 function agregarBloqueEstab(){
   const sel=document.getElementById('agregar-estab-sel');
   if(!sel||!sel.value) return toast('Seleccioná un establecimiento','warn');
-  ordenBloques.push({estabNombre:sel.value, lotes:new Set(), items:[]});
+  ordenBloques.push({estabNombre:sel.value, lotes:new Set(), itemsPorLote:{}});
   renderAgregarEstab();
   renderBloques();
 }
@@ -2372,6 +2465,9 @@ function renderBloque(bloque, bi){
   const lotesDisp = lotesEstab.filter(l=>!bloque.lotes.has(l.id));
   const lotesSel = lotesEstab.filter(l=>bloque.lotes.has(l.id));
 
+  // Asegurar que itemsPorLote existe
+  if (!bloque.itemsPorLote) bloque.itemsPorLote = {};
+
   // Calcular superficie de este bloque
   let supBloque=0;
   for(const lid of bloque.lotes){
@@ -2387,40 +2483,51 @@ function renderBloque(bloque, bi){
         ? '<div style="font-size:12px;color:var(--muted);margin-bottom:10px;font-style:italic">Este establecimiento no tiene U.P. cargadas</div>'
         : '<div style="font-size:12px;color:var(--muted);margin-bottom:10px">✓ Todas las U.P. de este establecimiento están seleccionadas</div>');
 
-  // Lista de lotes seleccionados con superficie editable
+  // Lista de lotes seleccionados con superficie + sus propios insumos
   const selList = lotesSel.map(l=>{
     const supActual = lotesSuperficies[l.id]!==undefined ? lotesSuperficies[l.id] : l.cantidad;
     const isOverride = lotesSuperficies[l.id]!==undefined && Number(lotesSuperficies[l.id])!==Number(l.cantidad);
-    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:6px">
-        <b style="font-size:13px">${esc(l.nombre)}</b>
+    if (!bloque.itemsPorLote[l.id]) bloque.itemsPorLote[l.id] = [];
+    const items = bloque.itemsPorLote[l.id];
+
+    // Render de los items de este lote
+    const itemsHtml = items.map((it, ii) => {
+      const insOpts = S.insumos.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(i=>`<option value="${i.id}"${it.insumoId===i.id?' selected':''}>${esc(i.nombre)}${i.categoria?' — '+esc(i.categoria):''} (stock: ${fmtN(i.stockEstab)} ${esc(i.unidad)})</option>`).join('');
+      const ins = S.insumos.find(x=>x.id===it.insumoId);
+      const u = ins ? ins.unidad : '';
+      return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:6px;margin-bottom:4px">
+        <div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:4px">
+          <select style="flex:1;font-size:11px;padding:4px 6px" onchange="updateLoteItem(${bi},'${l.id}',${ii},'insumoId',this.value)">
+            <option value="">— Insumo —</option>${insOpts}
+          </select>
+          <button class="btn-sm btn-danger" onclick="removeLoteItem(${bi},'${l.id}',${ii})" style="padding:2px 6px;font-size:11px">✕</button>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;font-size:11px">
+          <input type="number" step="0.01" value="${it.dosis||''}" placeholder="Dosis" style="flex:1;padding:4px 6px;font-size:11px" oninput="updateLoteItem(${bi},'${l.id}',${ii},'dosis',this.value)">
+          <span style="color:var(--muted);min-width:60px">${u?u+' / ha':'/ ha'}</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:8px">
+        <b style="font-size:13px;color:var(--accent)">📍 ${esc(l.nombre)}</b>
         <button class="btn-sm btn-danger" onclick="removeLoteFromBloque(${bi},'${l.id}')">✕</button>
       </div>
-      <div style="display:flex;gap:6px;align-items:center;font-size:12px">
+      <div style="display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:8px">
+        <span style="font-size:10px;color:var(--muted);text-transform:uppercase;font-weight:700">Superficie:</span>
         <input type="number" step="0.01" value="${supActual}" style="flex:1;padding:5px 8px;font-size:12px"
           oninput="updateSupBloque('${l.id}', this.value, ${bi})">
         <span style="color:var(--muted)">${esc(l.unidad||'')}</span>
         ${isOverride?`<span class="badge mono" style="background:var(--warn)22;color:var(--warn);border:1px solid var(--warn)44;font-size:10px">Modif.</span>`:''}
       </div>
-      ${isOverride?`<div style="font-size:10px;color:var(--muted);margin-top:3px">U.P. completa: ${fmtN(l.cantidad)} ${esc(l.unidad||'')} · <a onclick="resetSupBloque('${l.id}', ${bi})" style="color:var(--accent);cursor:pointer;text-decoration:underline">Restablecer</a></div>`:''}
-    </div>`;
-  }).join('');
-
-  // Insumos del bloque
-  const itemsHtml = bloque.items.map((it,ii)=>{
-    const insOpts=S.insumos.map(i=>`<option value="${i.id}"${it.insumoId===i.id?' selected':''}>${esc(i.nombre)} (stock: ${fmtN(i.stockEstab)} ${esc(i.unidad)})</option>`).join('');
-    const ins=S.insumos.find(x=>x.id===it.insumoId);
-    const u=ins?ins.unidad:'';
-    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;margin-bottom:6px">
-      <div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px">
-        <select style="flex:1;font-size:12px;padding:5px 8px" onchange="updateBloqueItem(${bi},${ii},'insumoId',this.value)">
-          <option value="">— Insumo —</option>${insOpts}
-        </select>
-        <button class="btn-sm btn-danger" onclick="removeBloqueItem(${bi},${ii})">✕</button>
-      </div>
-      <div style="display:flex;gap:6px;align-items:center;font-size:12px">
-        <input type="number" step="0.01" value="${it.dosis||''}" placeholder="Dosis" style="flex:1;padding:5px 8px;font-size:12px" oninput="updateBloqueItem(${bi},${ii},'dosis',this.value)">
-        <span style="color:var(--muted)">${u?u+' / ha':'/ ha'}</span>
+      ${isOverride?`<div style="font-size:10px;color:var(--muted);margin-bottom:6px">U.P. completa: ${fmtN(l.cantidad)} ${esc(l.unidad||'')} · <a onclick="resetSupBloque('${l.id}', ${bi})" style="color:var(--accent);cursor:pointer;text-decoration:underline">Restablecer</a></div>`:''}
+      <div style="border-top:1px dashed var(--border);padding-top:6px;margin-top:4px">
+        <div class="row-between" style="margin-bottom:4px">
+          <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em">📦 Insumos para esta U.P.</div>
+          <button class="btn-sm btn-secondary" onclick="addLoteItem(${bi},'${l.id}')" style="padding:2px 8px;font-size:11px">+ Insumo</button>
+        </div>
+        ${itemsHtml || '<div style="font-size:11px;color:var(--muted);font-style:italic;padding:4px 0">Sin insumos para esta U.P.</div>'}
       </div>
     </div>`;
   }).join('');
@@ -2433,21 +2540,10 @@ function renderBloque(bloque, bi){
 
     <!-- U.P. -->
     <div style="margin-bottom:14px">
-      <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📍 Unidades productivas</div>
+      <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📍 Agregá unidades productivas</div>
       ${chipsDisp}
       ${selList}
       ${lotesSel.length>0?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Total a trabajar en este establecimiento: <span class="mono" style="color:var(--accent);font-weight:700">${fmtN(supBloque)} ha</span></div>`:''}
-    </div>
-
-    <div style="height:1px;background:var(--border);margin:10px 0"></div>
-
-    <!-- Insumos -->
-    <div>
-      <div class="row-between" style="margin-bottom:6px">
-        <div style="font-size:10px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em">📦 Insumos a aplicar (dosis/ha)</div>
-        <button class="btn-sm btn-secondary" onclick="addBloqueItem(${bi})">+ Agregar</button>
-      </div>
-      ${itemsHtml || '<div style="font-size:12px;color:var(--muted);font-style:italic">Sin insumos cargados</div>'}
     </div>
   </div>`;
 }
@@ -2456,14 +2552,8 @@ function addLoteToBloque(bi, loteId){
   const b=ordenBloques[bi];
   if(!b) return;
   b.lotes.add(loteId);
-  renderBloques();
-}
-
-function removeLoteFromBloque(bi, loteId){
-  const b=ordenBloques[bi];
-  if(!b) return;
-  b.lotes.delete(loteId);
-  delete lotesSuperficies[loteId];
+  if (!b.itemsPorLote) b.itemsPorLote = {};
+  if (!b.itemsPorLote[loteId]) b.itemsPorLote[loteId] = [];
   renderBloques();
 }
 
@@ -2476,7 +2566,6 @@ function updateSupBloque(loteId, val, bi){
   } else {
     lotesSuperficies[loteId]=num;
   }
-  // Solo recalcular totales sin re-render para no perder foco en el input
   actualizarTotales();
 }
 
@@ -2485,26 +2574,36 @@ function resetSupBloque(loteId, bi){
   renderBloques();
 }
 
-function addBloqueItem(bi){
+function removeLoteFromBloque(bi, loteId){
   const b=ordenBloques[bi];
   if(!b) return;
-  b.items.push({insumoId:'', dosis:''});
+  b.lotes.delete(loteId);
+  delete lotesSuperficies[loteId];
+  if (b.itemsPorLote) delete b.itemsPorLote[loteId];
   renderBloques();
 }
 
-function removeBloqueItem(bi, ii){
-  const b=ordenBloques[bi];
-  if(!b) return;
-  b.items.splice(ii,1);
+function addLoteItem(bi, loteId){
+  const b = ordenBloques[bi];
+  if (!b) return;
+  if (!b.itemsPorLote) b.itemsPorLote = {};
+  if (!b.itemsPorLote[loteId]) b.itemsPorLote[loteId] = [];
+  b.itemsPorLote[loteId].push({insumoId:'', dosis:''});
   renderBloques();
 }
 
-function updateBloqueItem(bi, ii, field, val){
-  const b=ordenBloques[bi];
-  if(!b||!b.items[ii]) return;
-  b.items[ii][field]=val;
-  // Si cambia el insumo necesitamos re-render para que actualice la unidad mostrada
-  if(field==='insumoId'){
+function removeLoteItem(bi, loteId, ii){
+  const b = ordenBloques[bi];
+  if (!b || !b.itemsPorLote || !b.itemsPorLote[loteId]) return;
+  b.itemsPorLote[loteId].splice(ii, 1);
+  renderBloques();
+}
+
+function updateLoteItem(bi, loteId, ii, field, val){
+  const b = ordenBloques[bi];
+  if (!b || !b.itemsPorLote || !b.itemsPorLote[loteId] || !b.itemsPorLote[loteId][ii]) return;
+  b.itemsPorLote[loteId][ii][field] = val;
+  if (field === 'insumoId'){
     renderBloques();
   } else {
     actualizarTotales();
@@ -2516,7 +2615,7 @@ function updateBloqueItem(bi, ii, field, val){
 async function eliminarOrden(id){
   const o = S.ordenes.find(x => x.id === id);
   if (!o) return;
-  if (!await confirmar(`¿Eliminar la orden ${o.numero} de ${o.contratista}? Se devolverán al stock todos los insumos descontados.`)) return;
+  if (!await confirmar(`¿Enviar la orden ${o.numero} de ${o.contratista} a la papelera? Se devolverán al stock todos los insumos descontados. Podrás recuperarla desde 🗑️ Papelera.`)) return;
 
   // Calcular cuánto stock devolver por insumo
   const devoluciones = {};  // {insumoId: cantidad}
@@ -2564,11 +2663,14 @@ async function eliminarOrden(id){
     S.remitos = S.remitos.filter(r => !(r.numero === o.documento.numero && (r.proveedor||'').includes(`Orden ${o.numero}`)));
   }
 
-  // Eliminar la orden
+  // Mover a papelera (después de devolver el stock)
+  moverAPapelera('orden', o);
+
+  // Eliminar la orden de la lista activa
   S.ordenes = S.ordenes.filter(x => x.id !== id);
   saveState();
   render();
-  toast(`Orden eliminada — Stock restablecido ✓`);
+  toast(`Orden enviada a papelera — Stock restablecido ✓`);
 }
 
 // Actualiza el resumen consolidado de la orden
@@ -2592,24 +2694,36 @@ function actualizarTotales(){
     }
     supGlobal += supBloque;
 
-    const itemsBloque=[];
-    for(const it of b.items){
-      const dosis=parseFloat(it.dosis);
-      if(!it.insumoId||!dosis||dosis<=0) continue;
-      const ins=S.insumos.find(x=>x.id===it.insumoId);
-      if(!ins) continue;
-      const total=dosis*supBloque;
-      itemsBloque.push({insumoId:it.insumoId,nombre:ins.nombre,unidad:ins.unidad,dosis,total});
-      // Acumular en consolidado
-      if(!consolidado[it.insumoId]){
-        consolidado[it.insumoId]={nombre:ins.nombre,unidad:ins.unidad,total:0,stockEstab:Number(ins.stockEstab)};
+    const lotesDetalle=[];  // [{loteNombre, supLote, items:[...]}]
+
+    // Iterar por cada U.P. del bloque
+    for (const lid of b.lotes){
+      const lote = S.lotes.find(x => x.id === lid);
+      if (!lote) continue;
+      const supLote = lotesSuperficies[lid]!==undefined ? Number(lotesSuperficies[lid]) : Number(lote.cantidad);
+      const items = (b.itemsPorLote && b.itemsPorLote[lid]) ? b.itemsPorLote[lid] : [];
+      const itemsLote = [];
+      for (const it of items){
+        const dosis = parseFloat(it.dosis);
+        if (!it.insumoId || !dosis || dosis <= 0) continue;
+        const ins = S.insumos.find(x => x.id === it.insumoId);
+        if (!ins) continue;
+        const total = dosis * supLote;
+        itemsLote.push({insumoId:it.insumoId,nombre:ins.nombre,categoria:ins.categoria||'',unidad:ins.unidad,dosis,total});
+        // Acumular en consolidado
+        if (!consolidado[it.insumoId]){
+          consolidado[it.insumoId] = {nombre:ins.nombre, categoria:ins.categoria||'', unidad:ins.unidad, total:0, stockEstab:Number(ins.stockEstab)};
+        }
+        consolidado[it.insumoId].total += total;
+        hayDatos = true;
       }
-      consolidado[it.insumoId].total += total;
-      hayDatos=true;
+      if (itemsLote.length > 0){
+        lotesDetalle.push({loteNombre:lote.nombre, supLote, unidad:lote.unidad||'ha', items:itemsLote});
+      }
     }
 
-    if(b.lotes.size>0 || itemsBloque.length>0){
-      detalleBloques.push({estabNombre:b.estabNombre, supTotal:supBloque, items:itemsBloque});
+    if (b.lotes.size > 0 || lotesDetalle.length > 0){
+      detalleBloques.push({estabNombre:b.estabNombre, supTotal:supBloque, lotesDetalle});
     }
   }
 
@@ -2625,15 +2739,19 @@ function actualizarTotales(){
 
   cont.style.display='block';
 
-  // Detalle por establecimiento
+  // Detalle por establecimiento → por lote → insumos
   const detalleHtml = detalleBloques.map(b=>{
-    if(b.items.length===0) return '';
-    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
-      <div style="font-size:11px;color:var(--accent);font-weight:700;margin-bottom:6px">🏡 ${esc(b.estabNombre)} <span style="color:var(--muted);font-weight:400;font-size:10px">— ${fmtN(b.supTotal)} ha</span></div>
-      ${b.items.map(it=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0">
-        <span>${esc(it.nombre)}</span>
+    if(b.lotesDetalle.length===0) return '';
+    const lotesHtml = b.lotesDetalle.map(ld=>`<div style="margin-top:6px;padding:6px;background:var(--surface);border-radius:4px">
+      <div style="font-size:11px;color:var(--accent);font-weight:600;margin-bottom:4px">📍 ${esc(ld.loteNombre)} <span style="color:var(--muted);font-weight:400">(${fmtN(ld.supLote)} ${esc(ld.unidad||'')})</span></div>
+      ${ld.items.map(it=>`<div style="display:flex;justify-content:space-between;font-size:11px;padding:1px 0">
+        <span>${esc(it.nombre)}${it.categoria?` <span style="font-size:10px;color:var(--muted)">— ${esc(it.categoria)}</span>`:''}</span>
         <span class="mono" style="color:var(--muted)">${fmtN(it.dosis)} ${esc(it.unidad)}/ha · <b style="color:var(--text)">${fmtN(it.total)} ${esc(it.unidad)}</b></span>
       </div>`).join('')}
+    </div>`).join('');
+    return `<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
+      <div style="font-size:11px;color:var(--accent);font-weight:700;margin-bottom:6px">🏡 ${esc(b.estabNombre)} <span style="color:var(--muted);font-weight:400;font-size:10px">— ${fmtN(b.supTotal)} ha</span></div>
+      ${lotesHtml}
     </div>`;
   }).join('');
 
@@ -2647,7 +2765,7 @@ function actualizarTotales(){
       </tr></thead>
       <tbody>
         ${filasConsol.map(f=>`<tr>
-          <td style="padding:6px;border-bottom:1px solid var(--border)"><b>${esc(f.nombre)}</b></td>
+          <td style="padding:6px;border-bottom:1px solid var(--border)"><b>${esc(f.nombre)}</b>${f.categoria?`<br><span style="font-size:10px;color:var(--muted)">${esc(f.categoria)}</span>`:''}</td>
           <td class="mono" style="text-align:right;padding:6px;border-bottom:1px solid var(--border);font-weight:700;color:${f.stockOK?'var(--accent)':'var(--danger)'}">${fmtN(f.total)} ${esc(f.unidad)}</td>
           <td class="mono" style="text-align:right;padding:6px;border-bottom:1px solid var(--border);font-size:11px;color:${f.stockOK?'var(--muted)':'var(--danger)'}">${f.stockOK?'✓':'✗'} ${fmtN(f.stockEstab)}</td>
         </tr>`).join('')}
@@ -2691,28 +2809,35 @@ function saveNewOrden(){
   const consolidadoStock={};  // {insumoId: cantidadTotal}
 
   for(const b of ordenBloques){
-    // Detalle de superficies por lote
+    if (!b.itemsPorLote) b.itemsPorLote = {};
+
+    // Detalle de superficies por lote + sus insumos
     const lotesDetalle = [...b.lotes].map(id=>{
       const l=S.lotes.find(x=>x.id===id);
       const supAplicada = lotesSuperficies[id]!==undefined ? Number(lotesSuperficies[id]) : Number(l.cantidad);
-      return {id, supAplicada, supOriginal:Number(l.cantidad)};
+
+      // Items de este lote
+      const itemsLote = [];
+      const itemsRaw = b.itemsPorLote[id] || [];
+      for (const it of itemsRaw){
+        const dosis = parseFloat(it.dosis);
+        if (!it.insumoId || !dosis || dosis <= 0) continue;
+        const ins = S.insumos.find(x=>x.id===it.insumoId);
+        if (!ins) continue;
+        const cantidadTotal = dosis * supAplicada;
+        itemsLote.push({id:uid(), insumoId:it.insumoId, dosis, cantidad:cantidadTotal, unidad:ins.unidad});
+        consolidadoStock[it.insumoId] = (consolidadoStock[it.insumoId] || 0) + cantidadTotal;
+      }
+
+      return {id, supAplicada, supOriginal:Number(l.cantidad), items:itemsLote};
     });
     const supBloque = lotesDetalle.reduce((a,x)=>a+x.supAplicada, 0);
     supGlobal += supBloque;
 
-    // Items con cantidades calculadas
-    const items=[];
-    for(const it of b.items){
-      const dosis=parseFloat(it.dosis);
-      if(!it.insumoId||!dosis||dosis<=0) continue;
-      const ins=S.insumos.find(x=>x.id===it.insumoId);
-      if(!ins) continue;
-      const cantidadTotal=dosis*supBloque;
-      items.push({id:uid(),insumoId:it.insumoId,dosis,cantidad:cantidadTotal,unidad:ins.unidad});
-      consolidadoStock[it.insumoId]=(consolidadoStock[it.insumoId]||0)+cantidadTotal;
-    }
+    // Items planos del bloque (suma de todos los items de cada lote, para compatibilidad)
+    const itemsBloque = lotesDetalle.flatMap(ld => ld.items);
 
-    bloquesData.push({estabNombre:b.estabNombre, lotes:[...b.lotes], lotesDetalle, supTotal:supBloque, items});
+    bloquesData.push({estabNombre:b.estabNombre, lotes:[...b.lotes], lotesDetalle, supTotal:supBloque, items:itemsBloque});
   }
 
   // Verificar stock global contra consolidado
@@ -2724,7 +2849,6 @@ function saveNewOrden(){
     }
   }
 
-  // Generar número de orden
   // Generar número de orden (o usar el original si estamos editando)
   const ordenNumero = editandoOrdenId ? editandoOrdenNumero : ('OT-'+String(S.ordenes.length+1).padStart(4,'0'));
 
@@ -2733,27 +2857,35 @@ function saveNewOrden(){
   if(docTipo==='remito') docTxt=`Remito ${docNum}`;
   else if(docTipo==='carta') docTxt=`Carta de Porte ${docNum}`;
 
-  // Descontar stock y registrar movimientos (uno por bloque y por insumo, para tener trazabilidad)
+  // Descontar stock y registrar movimientos (uno por bloque, por lote, por insumo, para trazabilidad)
   const updates={};
   const movs=[];
   for(const b of bloquesData){
-    for(const item of b.items){
-      const ins=S.insumos.find(x=>x.id===item.insumoId);
-      if(!ins) continue;
-      updates[ins.id]=(updates[ins.id]!==undefined?updates[ins.id]:Number(ins.stockEstab))-item.cantidad;
-      const notaBase=`Orden ${ordenNumero} - ${contratista} · 🏡 ${b.estabNombre} (${fmtN(item.dosis)} ${ins.unidad}/ha × ${fmtN(b.supTotal)} ha)`;
-      const notaCompleta=docTxt?`${notaBase} - ${docTxt}`:notaBase;
-      movs.push({id:uid(),fecha:now(),insumoId:ins.id,insumoNombre:ins.nombre,tipo:'uso_estab',cantidad:item.cantidad,unidad:ins.unidad,nota:notaCompleta});
+    for(const ld of b.lotesDetalle){
+      const lote = S.lotes.find(x=>x.id===ld.id);
+      const loteName = lote ? lote.nombre : '(U.P.)';
+      for(const item of ld.items){
+        const ins=S.insumos.find(x=>x.id===item.insumoId);
+        if(!ins) continue;
+        updates[ins.id]=(updates[ins.id]!==undefined?updates[ins.id]:Number(ins.stockEstab))-item.cantidad;
+        const notaBase=`Orden ${ordenNumero} - ${contratista} · 🏡 ${b.estabNombre} · 📍 ${loteName} (${fmtN(item.dosis)} ${ins.unidad}/ha × ${fmtN(ld.supAplicada)} ha)`;
+        const notaCompleta=docTxt?`${notaBase} - ${docTxt}`:notaBase;
+        movs.push({id:uid(),fecha:now(),insumoId:ins.id,insumoNombre:ins.nombre,tipo:'uso_estab',cantidad:item.cantidad,unidad:ins.unidad,nota:notaCompleta});
+      }
     }
   }
 
   // Si es Remito, registrarlo también en S.remitos
   if(docTipo==='remito'){
     for(const b of bloquesData){
-      for(const item of b.items){
-        const ins=S.insumos.find(x=>x.id===item.insumoId);
-        if(!ins) continue;
-        S.remitos=[{id:uid(),fecha,numero:docNum,proveedor:`Salida — Orden ${ordenNumero} (${b.estabNombre})`,insumoId:ins.id,insumoNombre:ins.nombre,cantidad:item.cantidad,unidad:ins.unidad,creadoEn:now()},...S.remitos];
+      for(const ld of b.lotesDetalle){
+        const lote = S.lotes.find(x=>x.id===ld.id);
+        const loteName = lote ? lote.nombre : '(U.P.)';
+        for(const item of ld.items){
+          const ins=S.insumos.find(x=>x.id===item.insumoId);
+          if(!ins) continue;
+          S.remitos=[{id:uid(),fecha,numero:docNum,proveedor:`Salida — Orden ${ordenNumero} (${b.estabNombre} - ${loteName})`,insumoId:ins.id,insumoNombre:ins.nombre,cantidad:item.cantidad,unidad:ins.unidad,creadoEn:now()},...S.remitos];
+        }
       }
     }
   }
@@ -2802,6 +2934,48 @@ function generarOrdenHTML(o){
 
   if(o.bloques && o.bloques.length>0){
     detalleHtml = o.bloques.map(b=>{
+      // Detectar si la orden usa la estructura nueva (items por lote)
+      const usaItemsPorLote = b.lotesDetalle && b.lotesDetalle.some(ld => ld.items && ld.items.length > 0);
+
+      if (usaItemsPorLote){
+        // NUEVA ESTRUCTURA: cada lote tiene sus propios insumos
+        const lotesHtml = b.lotesDetalle.map(ld=>{
+          const l = S.lotes.find(x=>x.id===ld.id);
+          const loteNom = l ? l.nombre : '(U.P. eliminada)';
+          const isOverride = ld.supAplicada !== ld.supOriginal;
+          const supTxt = isOverride
+            ? `${fmtN(ld.supAplicada)} ${l?l.unidad||'':''} (de ${fmtN(ld.supOriginal)})`
+            : `${fmtN(ld.supAplicada)} ${l?l.unidad||'':''}`;
+          const itemsRows = (ld.items || []).map(it => {
+            const ins = S.insumos.find(x=>x.id===it.insumoId);
+            const nom = ins ? ins.nombre : '(insumo eliminado)';
+            const cat = ins ? ins.categoria : '';
+            // Acumular en consolidado
+            if (!consolidado[it.insumoId]){
+              consolidado[it.insumoId] = {nombre:nom, categoria:cat, unidad:it.unidad, total:0};
+            }
+            consolidado[it.insumoId].total += Number(it.cantidad);
+            return `<tr>
+              <td style="padding:6px 10px;border:1px solid #ccc">${nom}${cat?` <span style="font-size:11px;color:#666">— ${cat}</span>`:''}</td>
+              <td style="padding:6px 10px;border:1px solid #ccc;text-align:right">${fmtN(it.dosis)} ${it.unidad}/ha</td>
+              <td style="padding:6px 10px;border:1px solid #ccc;text-align:right;font-weight:bold">${fmtN(it.cantidad)} ${it.unidad}</td>
+            </tr>`;
+          }).join('');
+          return `<div style="margin-bottom:14px;padding-left:10px;border-left:2px solid #888">
+            <div style="font-size:13px;font-weight:bold;margin-bottom:6px">📍 ${loteNom} <span style="font-weight:normal;color:#666;font-size:12px">— ${supTxt}</span></div>
+            ${itemsRows?`<table>
+              <thead><tr><th>Insumo</th><th style="text-align:right">Dosis</th><th style="text-align:right">Cantidad</th></tr></thead>
+              <tbody>${itemsRows}</tbody>
+            </table>`:'<div style="font-size:12px;color:#999;font-style:italic">Sin insumos</div>'}
+          </div>`;
+        }).join('');
+        return `<div style="margin-bottom:20px;border-left:3px solid #444;padding-left:12px">
+          <div style="font-size:14px;font-weight:bold;margin-bottom:8px">🏡 ${b.estabNombre} <span style="font-weight:normal;color:#666;font-size:12px">— ${fmtN(b.supTotal)} ha</span></div>
+          ${lotesHtml}
+        </div>`;
+      }
+
+      // ESTRUCTURA VIEJA: items compartidos por todos los lotes del bloque
       const lotesRows = b.lotes.map(lid=>{
         const l=S.lotes.find(x=>x.id===lid);
         if(!l) return '';
@@ -2817,13 +2991,14 @@ function generarOrdenHTML(o){
       const itemsRows = b.items.map(it=>{
         const ins=S.insumos.find(x=>x.id===it.insumoId);
         const nom=ins?ins.nombre:'(insumo eliminado)';
+        const cat=ins?ins.categoria:'';
         // Acumular en consolidado
         if(!consolidado[it.insumoId]){
-          consolidado[it.insumoId]={nombre:nom,unidad:it.unidad,total:0};
+          consolidado[it.insumoId]={nombre:nom,categoria:cat,unidad:it.unidad,total:0};
         }
         consolidado[it.insumoId].total += Number(it.cantidad);
         return `<tr>
-          <td style="padding:6px 10px;border:1px solid #ccc">${nom}</td>
+          <td style="padding:6px 10px;border:1px solid #ccc">${nom}${cat?` <span style="font-size:11px;color:#666">— ${cat}</span>`:''}</td>
           <td style="padding:6px 10px;border:1px solid #ccc;text-align:right">${fmtN(it.dosis)} ${it.unidad}/ha</td>
           <td style="padding:6px 10px;border:1px solid #ccc;text-align:right;font-weight:bold">${fmtN(it.cantidad)} ${it.unidad}</td>
         </tr>`;
@@ -2873,7 +3048,7 @@ function generarOrdenHTML(o){
   // Tabla consolidada (solo si hay bloques)
   let consolHtml='';
   if(o.bloques && o.bloques.length>0 && Object.keys(consolidado).length>0){
-    const rows = Object.values(consolidado).map(c=>`<tr><td style="padding:6px 10px;border:1px solid #ccc">${c.nombre}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;font-weight:bold">${fmtN(c.total)} ${c.unidad}</td></tr>`).join('');
+    const rows = Object.values(consolidado).map(c=>`<tr><td style="padding:6px 10px;border:1px solid #ccc">${c.nombre}${c.categoria?` <span style="font-size:11px;color:#666">— ${c.categoria}</span>`:''}</td><td style="padding:6px 10px;border:1px solid #ccc;text-align:right;font-weight:bold">${fmtN(c.total)} ${c.unidad}</td></tr>`).join('');
     consolHtml = `<b style="font-size:15px">TOTAL GENERAL DE INSUMOS</b>
       <table><thead><tr><th>Insumo</th><th style="text-align:right">Cantidad consolidada</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
@@ -3054,8 +3229,169 @@ function imprimirOrden(id){
 }
 
 // ════════════════════════════════════════════════════════════════════
-// MÓDULO USUARIOS (solo admin)
+// MÓDULO PAPELERA
 // ════════════════════════════════════════════════════════════════════
+
+// Mapeo entidad → array en S y nombre legible
+const PAPELERA_TIPOS = {
+  insumo:       { array:'insumos',      label:'Insumo',              icon:'📦' },
+  lote:         { array:'lotes',        label:'Unidad Productiva',   icon:'🗺️' },
+  contratista:  { array:'contratistas', label:'Contratista',         icon:'👷' },
+  proveedor:    { array:'proveedores',  label:'Proveedor',           icon:'🏢' },
+  orden:        { array:'ordenes',      label:'Orden de Trabajo',    icon:'📋' },
+};
+
+// Mover un objeto a la papelera (sin eliminarlo aún)
+function moverAPapelera(tipo, registro){
+  const item = {
+    id: uid(),
+    tipo,
+    fechaEliminacion: now(),
+    eliminadoPor: SESSION.usuario || '',
+    datos: JSON.parse(JSON.stringify(registro))  // copia profunda
+  };
+  S.papelera = [item, ...(S.papelera || [])];
+}
+
+function renderPapelera(){
+  const items = S.papelera || [];
+
+  // Agrupar por tipo
+  const cards = items.map(item => {
+    const tipoInfo = PAPELERA_TIPOS[item.tipo] || { label: item.tipo, icon:'📄' };
+    const datos = item.datos;
+    let descripcion = '';
+    if (item.tipo === 'insumo') descripcion = `${datos.nombre || '—'} ${datos.categoria?'· '+datos.categoria:''}`;
+    else if (item.tipo === 'lote') descripcion = `${datos.nombre || '—'} ${datos.establecimiento?'· '+datos.establecimiento:''}`;
+    else if (item.tipo === 'contratista') descripcion = `${datos.nombre || '—'} ${datos.servicio?'· '+datos.servicio:''}`;
+    else if (item.tipo === 'proveedor') descripcion = `${datos.nombre || '—'} ${datos.ciudad?'· '+datos.ciudad:''}`;
+    else if (item.tipo === 'orden') descripcion = `${datos.numero || '—'} · ${datos.contratista || '—'}`;
+    else descripcion = JSON.stringify(datos).substring(0, 60);
+
+    return `<div class="card" style="margin-bottom:10px">
+      <div class="row-between" style="margin-bottom:6px">
+        <div>
+          <span style="font-size:12px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em">${tipoInfo.icon} ${tipoInfo.label}</span>
+          <div style="font-size:14px;font-weight:700;margin-top:2px">${esc(descripcion)}</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        🕐 ${esc(item.fechaEliminacion)}${item.eliminadoPor?` · 👤 ${esc(item.eliminadoPor)}`:''}
+      </div>
+      <div class="row" style="gap:6px">
+        <button class="btn-sm btn-secondary" onclick="restaurarPapelera('${item.id}')">♻️ Restaurar</button>
+        <button class="btn-sm btn-danger" onclick="eliminarDefinitivo('${item.id}')">🔥 Eliminar definitivo</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="row-between" style="margin-bottom:16px">
+      <h2 style="font-size:18px;font-weight:800">🗑️ Papelera</h2>
+      ${items.length>0?`<button class="btn-danger btn-sm" onclick="vaciarPapelera()">🧹 Vaciar todo</button>`:''}
+    </div>
+    <div style="background:var(--surface);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);margin-bottom:14px">
+      💡 Cuando eliminás algo, queda guardado acá. Podés restaurarlo o eliminarlo definitivamente. Los elementos en la papelera no aparecen en los listados normales.
+    </div>
+    <div class="row" style="margin-bottom:16px;gap:8px">
+      <div class="stat"><div class="stat-lbl">Elementos</div><div class="stat-val" style="color:var(--accent)">${items.length}</div></div>
+    </div>
+    ${cards || '<div style="color:var(--muted);text-align:center;padding:40px;font-size:14px">La papelera está vacía</div>'}`;
+}
+
+async function restaurarPapelera(itemId){
+  const item = S.papelera.find(x => x.id === itemId);
+  if (!item) return;
+  const tipoInfo = PAPELERA_TIPOS[item.tipo];
+  if (!tipoInfo) return toast('Tipo desconocido','danger');
+
+  const arrayName = tipoInfo.array;
+  // Verificar si ya existe uno con ese ID (raro pero por las dudas)
+  const existe = (S[arrayName] || []).some(x => x.id === item.datos.id);
+  if (existe){
+    if (!await confirmar('Ya existe un elemento con el mismo ID. ¿Restaurar de todas formas? Se actualizará el existente.')) return;
+    S[arrayName] = (S[arrayName] || []).map(x => x.id === item.datos.id ? item.datos : x);
+  } else {
+    S[arrayName] = [item.datos, ...(S[arrayName] || [])];
+  }
+
+  // Si era una orden, hay que descontar el stock de nuevo (porque al eliminarla lo devolvimos)
+  if (item.tipo === 'orden'){
+    const o = item.datos;
+    const descuentos = {};
+    if (o.bloques && o.bloques.length > 0){
+      for (const b of o.bloques){
+        for (const it of (b.items || [])){
+          if (!it.insumoId) continue;
+          descuentos[it.insumoId] = (descuentos[it.insumoId] || 0) + Number(it.cantidad);
+        }
+      }
+    } else if (o.items && o.items.length > 0){
+      for (const it of o.items){
+        if (!it.insumoId) continue;
+        descuentos[it.insumoId] = (descuentos[it.insumoId] || 0) + Number(it.cantidad);
+      }
+    }
+    // Verificar stock antes de descontar
+    for (const insId in descuentos){
+      const ins = S.insumos.find(x => x.id === insId);
+      if (!ins) continue;
+      if (descuentos[insId] > Number(ins.stockEstab)){
+        return toast(`No se puede restaurar: stock insuficiente de ${ins.nombre} (necesita ${fmtN(descuentos[insId])} ${ins.unidad}, hay ${fmtN(ins.stockEstab)})`,'danger');
+      }
+    }
+    // Aplicar descuentos
+    S.insumos = S.insumos.map(ins => {
+      if (descuentos[ins.id]){
+        return { ...ins, stockEstab: Number(ins.stockEstab) - descuentos[ins.id] };
+      }
+      return ins;
+    });
+    // Registrar movimientos de descuento por restauración
+    for (const insId in descuentos){
+      const ins = S.insumos.find(x => x.id === insId);
+      if (!ins) continue;
+      S.movimientos = [{
+        id: uid(),
+        fecha: now(),
+        insumoId: insId,
+        insumoNombre: ins.nombre,
+        tipo: 'uso_estab',
+        cantidad: descuentos[insId],
+        unidad: ins.unidad,
+        nota: `Restauración de orden ${o.numero} desde papelera`
+      }, ...S.movimientos];
+    }
+  }
+
+  // Quitar de la papelera
+  S.papelera = S.papelera.filter(x => x.id !== itemId);
+  saveState();
+  render();
+  toast('Restaurado ✓');
+}
+
+async function eliminarDefinitivo(itemId){
+  const item = S.papelera.find(x => x.id === itemId);
+  if (!item) return;
+  if (!await confirmar('¿Eliminar definitivamente? Esta acción NO se puede deshacer.')) return;
+  S.papelera = S.papelera.filter(x => x.id !== itemId);
+  saveState();
+  render();
+  toast('Eliminado definitivamente');
+}
+
+async function vaciarPapelera(){
+  const count = (S.papelera || []).length;
+  if (count === 0) return;
+  if (!await confirmar(`¿Vaciar la papelera? Se eliminarán definitivamente ${count} ${count===1?'elemento':'elementos'}. Esta acción NO se puede deshacer.`)) return;
+  S.papelera = [];
+  saveState();
+  render();
+  toast('Papelera vaciada');
+}
+
+
 
 function renderUsuarios(){
   if (SESSION.rol !== 'admin'){
@@ -3336,6 +3672,7 @@ async function cargarYRenderizar(){
       unidadesUP: resp.datos.unidadesUP || [],
       servicios: resp.datos.servicios || [],
       proveedores: resp.datos.proveedores || [],
+      papelera: resp.datos.papelera || [],
       insumos: resp.datos.insumos || [],
       lotes: resp.datos.lotes || [],
       contratistas: resp.datos.contratistas || [],
