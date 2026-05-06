@@ -413,18 +413,21 @@ function closeModal(){
 
 function showModal(title,html,wide){
   closeModal();
+  // Detectar automáticamente si el contenido tiene un botón "Cancelar"
+  // Si lo tiene → es un formulario, no mostramos la ✕ (se cierra solo con los botones)
+  // Si no lo tiene → es un modal de gestión (listas, etc.), mostramos la ✕ para cerrar
+  const tieneCancelar = /Cancelar<\/button>/.test(html);
   const o=document.createElement('div');
   o.className='modal-overlay';
   o.id='modal-overlay';
   o.innerHTML=`<div class="modal-box" style="${wide?'max-height:95vh':''}">
     <div class="modal-header">
       <div class="modal-title">${esc(title)}</div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+      ${tieneCancelar?'':'<button class="modal-close" onclick="closeModal()">✕</button>'}
     </div>
     <div id="modal-body">${html}</div>
   </div>`;
-  // NO se cierra al hacer clic afuera — solo con el botón ✕ o los botones del modal
-  // Esto previene perder lo cargado por error
+  // NO se cierra al hacer clic afuera — solo con los botones
   document.body.appendChild(o);
 }
 
