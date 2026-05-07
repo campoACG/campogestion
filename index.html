@@ -255,6 +255,7 @@ const INIT = {
   ordenes:[],
   movimientos:[],
   facturas:[],
+  facturasDoc:[],
   remitos:[],
   variedades:[],
   servicios:['Fumigación','Siembra','Cosecha','Fertilización','Labranza','Pulverización','Otro'],
@@ -309,6 +310,7 @@ function snapshotEstado(s){
     ordenes: s.ordenes || [],
     movimientos: s.movimientos || [],
     facturas: s.facturas || [],
+    facturasDoc: s.facturasDoc || [],
     remitos: s.remitos || [],
     categorias: s.categorias || [],
     unidades: s.unidades || [],
@@ -328,6 +330,7 @@ const ENTIDAD_MAP = {
   ordenes:        { tipo:'objeto', entidad:'orden' },
   movimientos:    { tipo:'objeto', entidad:'movimiento' },
   facturas:       { tipo:'objeto', entidad:'compra' },
+  facturasDoc:    { tipo:'objeto', entidad:'factura' },
   remitos:        { tipo:'objeto', entidad:'remito' },
   categorias:     { tipo:'lista',  entidad:'categoria' },
   unidades:       { tipo:'lista',  entidad:'unidad' },
@@ -590,9 +593,7 @@ function renderInsumos(){
       <div class="row" style="gap:8px;flex-wrap:wrap">
         <button class="btn-secondary btn-sm" onclick="openProveedoresModal()">🏢 Proveedores</button>
         <button class="btn-secondary btn-sm" onclick="openCategoriasModal()">🏷️ Categ./Unid.</button>
-        <button class="btn-secondary btn-sm" onclick="limpiarMovimientosHuerfanos()">🔧 Limpiar mov. huérfanos</button>
         <button class="btn-warn btn-sm" onclick="openMovModal()">+ Movimiento</button>
-        <button class="btn-warn btn-sm" onclick="openCompraMultiple()">+ Compra Múltiple</button>
         <button class="btn-primary btn-sm" onclick="openNewInsumo()">+ Insumo/Grano</button>
       </div>
     </div>
@@ -657,8 +658,8 @@ function renderInsumos(){
       <tbody>${movRows||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">Sin movimientos</td></tr>'}</tbody></table>
     </div>
 
-    <div class="row fac-rem-row" style="gap:10px;margin-bottom:20px">
-      <div style="flex:1;min-width:0">
+    <div class="row fac-rem-row" style="gap:10px;margin-bottom:20px;flex-wrap:wrap">
+      <div style="flex:1;min-width:280px">
         <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">🛒 COMPRAS</h3>
         <div class="card" style="overflow-x:auto">
           <table><thead><tr><th>Fecha</th><th>Proveedor / Insumo</th><th>Cant.</th></tr></thead>
@@ -669,7 +670,18 @@ function renderInsumos(){
           </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin compras</td></tr>'}</tbody></table>
         </div>
       </div>
-      <div style="flex:1;min-width:0">
+      <div style="flex:1;min-width:280px">
+        <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">🧾 FACTURAS</h3>
+        <div class="card" style="overflow-x:auto">
+          <table><thead><tr><th>Fecha</th><th>Factura / Insumo</th><th>Cant.</th></tr></thead>
+          <tbody>${(S.facturasDoc||[]).slice(0,10).map(f=>`<tr>
+            <td class="mono" style="font-size:11px;color:var(--muted)">${esc(f.fecha)}</td>
+            <td style="font-size:12px"><b>${esc(f.numero)}</b><br><span style="color:var(--muted);font-size:11px">${esc(f.proveedor)} · ${esc(f.insumoNombre)}</span></td>
+            <td class="mono" style="font-size:12px">${fmtN(f.cantidad)} ${esc(f.unidad)}</td>
+          </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin facturas</td></tr>'}</tbody></table>
+        </div>
+      </div>
+      <div style="flex:1;min-width:280px">
         <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">📄 REMITOS</h3>
         <div class="card" style="overflow-x:auto">
           <table><thead><tr><th>Fecha</th><th>Remito / Insumo</th><th>Cant.</th></tr></thead>
@@ -1272,112 +1284,297 @@ async function limpiarMovimientosHuerfanos(){
   toast(`${huerfanos.length} movimientos huérfanos eliminados ✓`);
 }
 
+// Estado del modal de movimientos (para multi-insumos)
+let movItems = [];
+
 function openMovModal(){
-  const insOpts=S.insumos.map(i=>`<option value="${i.id}">${esc(i.nombre)} (${esc(i.unidad)})</option>`).join('');
-  const today=new Date().toISOString().slice(0,10);
+  if (S.insumos.length === 0) return toast('Cargá al menos un insumo primero','warn');
+  // Inicializar con un item vacío
+  movItems = [{ id:uid(), insumoId:'', cantidad:'' }];
+  renderMovModal();
+}
+
+function renderMovModal(){
+  const today = new Date().toISOString().slice(0,10);
+  const provOpts = S.proveedores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${esc(p.nombre)}">${esc(p.nombre)}</option>`).join('');
+
   showModal('Registrar Movimiento',`
-    <div class="field"><label>Insumo</label>
-      <select id="m-ins"><option value="">— Seleccionar —</option>${insOpts}</select></div>
     <div class="field"><label>Tipo de movimiento</label>
       <select id="m-tipo" onchange="updateMovTip()">
         <option value="ingreso_prov">⬆️ Ingreso a proveedor (compra)</option>
-        <option value="retiro_prov">🔄 Retiro proveedor → Establecimiento (con remito)</option>
+        <option value="retiro_prov">🔄 Retiro proveedor → Establecimiento</option>
         <option value="ingreso_estab">📥 Ingreso directo a establecimiento (stock inicial / ajuste)</option>
-      </select></div>
+      </select>
+    </div>
     <div id="m-tip" style="background:var(--surface);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);margin-bottom:14px">
-      ⬆️ Suma stock al proveedor y registra la compra</div>
+      ⬆️ Suma stock al proveedor con multi-insumos y documento de respaldo</div>
 
-    <!-- Campos específicos del ingreso a proveedor -->
-    <div id="m-compra-extra">
+    <!-- Proveedor (solo para ingreso/retiro a proveedor) -->
+    <div id="m-proveedor-wrap">
       <div class="field"><label>Proveedor</label>
         <select id="m-proveedor">
           <option value="">— Seleccionar —</option>
-          ${S.proveedores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${esc(p.nombre)}">${esc(p.nombre)}</option>`).join('')}
+          ${provOpts}
         </select>
         ${S.proveedores.length===0?`<div style="font-size:11px;color:var(--muted);margin-top:4px">💡 Cargá proveedores desde el botón 🏢 Proveedores</div>`:''}
       </div>
     </div>
 
-    <!-- Campos comunes -->
-    <div class="row" style="gap:10px">
-      <div class="field" style="flex:1"><label>Fecha</label><input id="m-fecha" type="date" value="${today}"></div>
-      <div class="field" style="flex:1"><label>Cantidad</label><input id="m-qty" type="number" placeholder="0"></div>
+    <!-- Fecha -->
+    <div class="field"><label>Fecha</label><input id="m-fecha" type="date" value="${today}"></div>
+
+    <!-- Lista de insumos (multi) -->
+    <div id="m-multi-wrap">
+      <div class="row-between" style="margin-bottom:8px">
+        <label style="font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.06em">Insumos</label>
+        <button class="btn-sm btn-secondary" onclick="agregarMovItem()">+ Agregar</button>
+      </div>
+      <div id="m-items"></div>
     </div>
 
-    <!-- Campos específicos del retiro -->
-    <div id="m-retiro-extra" style="display:none">
-      <div class="field"><label>N° de Remito</label><input id="m-remito" placeholder="Ej: 0001-00001234"></div>
+    <!-- Insumo simple (solo para ingreso directo a establecimiento) -->
+    <div id="m-simple-wrap" style="display:none">
+      <div class="field"><label>Insumo</label>
+        <select id="m-ins-simple">
+          <option value="">— Seleccionar —</option>
+          ${S.insumos.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(i=>`<option value="${i.id}">${esc(i.nombre)} (${esc(i.unidad)})</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Cantidad</label><input id="m-qty-simple" type="number" placeholder="0"></div>
     </div>
 
-    <div class="field"><label>Nota (opcional)</label><input id="m-nota" placeholder="Observación"></div>
+    <!-- Documento de respaldo (solo para movimientos con proveedor) -->
+    <div id="m-doc-wrap" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:14px">
+      <div style="font-size:10px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">📄 Documento de Respaldo</div>
+      <div class="field" style="margin-bottom:10px"><label>Tipo</label>
+        <select id="m-doc-tipo" onchange="updateMovDocTipo()">
+          <option value="ninguno">— Ninguno —</option>
+          <option value="factura">🧾 Factura</option>
+          <option value="remito">📄 Remito</option>
+        </select>
+      </div>
+      <div id="m-doc-num-wrap" style="display:none">
+        <div class="field" style="margin-bottom:0"><label id="m-doc-num-label">N° de Documento</label>
+          <input id="m-doc-num" placeholder="Ej: 0001-00001234">
+        </div>
+      </div>
+    </div>
+
+    <!-- Nota opcional (solo para ingreso directo) -->
+    <div id="m-nota-wrap" style="display:none">
+      <div class="field"><label>Nota (opcional)</label><input id="m-nota" placeholder="Observación"></div>
+    </div>
+
     <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
       <button class="btn-secondary" onclick="closeModal()">Cancelar</button>
       <button class="btn-warn" onclick="saveMov()">Registrar</button>
     </div>`);
+
+  renderMovItems();
+}
+
+function renderMovItems(){
+  const cont = document.getElementById('m-items');
+  if (!cont) return;
+  cont.innerHTML = movItems.map((item, idx) => {
+    const ins = S.insumos.find(x => x.id === item.insumoId);
+    const unidad = ins ? ins.unidad : '';
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+        <select style="flex:1" onchange="actualizarMovItem(${idx},'insumoId',this.value)">
+          <option value="">— Insumo —</option>
+          ${S.insumos.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(i=>`<option value="${i.id}"${item.insumoId===i.id?' selected':''}>${esc(i.nombre)}${i.categoria?' — '+esc(i.categoria):''}</option>`).join('')}
+        </select>
+        ${movItems.length>1?`<button class="btn-sm btn-danger" onclick="quitarMovItem(${idx})">✕</button>`:''}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="number" step="0.01" placeholder="Cantidad" value="${item.cantidad||''}" style="flex:1" oninput="actualizarMovItem(${idx},'cantidad',this.value)">
+        <span style="font-size:13px;color:var(--muted);min-width:80px">${esc(unidad)}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function agregarMovItem(){
+  movItems.push({ id:uid(), insumoId:'', cantidad:'' });
+  renderMovItems();
+}
+
+function quitarMovItem(idx){
+  movItems.splice(idx, 1);
+  renderMovItems();
+}
+
+function actualizarMovItem(idx, campo, val){
+  if (movItems[idx]) {
+    movItems[idx][campo] = val;
+    if (campo === 'insumoId') renderMovItems();
+  }
 }
 
 function updateMovTip(){
-  const tips={
-    ingreso_prov:'⬆️ Suma stock al proveedor y registra la compra',
-    retiro_prov:'🔄 Descuenta del proveedor y suma al establecimiento (requiere remito)',
-    ingreso_estab:'📥 Suma stock directamente al establecimiento (útil para cargar stock inicial o ajustes)'
+  const tips = {
+    ingreso_prov:'⬆️ Suma stock al proveedor con multi-insumos y documento de respaldo',
+    retiro_prov:'🔄 Descuenta del proveedor y suma al establecimiento (multi-insumos + documento)',
+    ingreso_estab:'📥 Suma stock directamente al establecimiento (un insumo, sin documento)'
   };
-  const t=document.getElementById('m-tipo');
-  if(t){
-    document.getElementById('m-tip').textContent=tips[t.value]||'';
-    // Mostrar/ocultar campos
-    const compraExtra=document.getElementById('m-compra-extra');
-    const retiroExtra=document.getElementById('m-retiro-extra');
-    if(compraExtra) compraExtra.style.display = (t.value==='ingreso_prov') ? 'block' : 'none';
-    if(retiroExtra) retiroExtra.style.display = (t.value==='retiro_prov') ? 'block' : 'none';
+  const t = document.getElementById('m-tipo');
+  if (!t) return;
+  document.getElementById('m-tip').textContent = tips[t.value] || '';
+
+  const provWrap = document.getElementById('m-proveedor-wrap');
+  const multiWrap = document.getElementById('m-multi-wrap');
+  const simpleWrap = document.getElementById('m-simple-wrap');
+  const docWrap = document.getElementById('m-doc-wrap');
+  const notaWrap = document.getElementById('m-nota-wrap');
+
+  if (t.value === 'ingreso_estab'){
+    // Modo simple: un solo insumo, sin proveedor, sin documento, con nota opcional
+    if (provWrap) provWrap.style.display = 'none';
+    if (multiWrap) multiWrap.style.display = 'none';
+    if (simpleWrap) simpleWrap.style.display = 'block';
+    if (docWrap) docWrap.style.display = 'none';
+    if (notaWrap) notaWrap.style.display = 'block';
+  } else {
+    // Modo multi: multi-insumos, con proveedor, con documento opcional
+    if (provWrap) provWrap.style.display = 'block';
+    if (multiWrap) multiWrap.style.display = 'block';
+    if (simpleWrap) simpleWrap.style.display = 'none';
+    if (docWrap) docWrap.style.display = 'block';
+    if (notaWrap) notaWrap.style.display = 'none';
+  }
+}
+
+function updateMovDocTipo(){
+  const t = document.getElementById('m-doc-tipo');
+  const wrap = document.getElementById('m-doc-num-wrap');
+  const lbl = document.getElementById('m-doc-num-label');
+  if (!t || !wrap) return;
+  if (t.value === 'ninguno'){
+    wrap.style.display = 'none';
+  } else {
+    wrap.style.display = 'block';
+    if (lbl) lbl.textContent = t.value === 'factura' ? 'N° de Factura' : 'N° de Remito';
   }
 }
 
 function saveMov(){
-  const insId=document.getElementById('m-ins').value;
-  const tipo=document.getElementById('m-tipo').value;
-  const qty=parseFloat(document.getElementById('m-qty').value);
-  const fecha=document.getElementById('m-fecha').value;
-  const nota=document.getElementById('m-nota').value.trim();
-  const ins=S.insumos.find(x=>x.id===insId);
-  if(!ins)return toast('Seleccioná un insumo','warn');
-  if(!qty||qty<=0)return toast('Cantidad inválida','warn');
-  if(!fecha)return toast('Ingresá la fecha','warn');
+  const tipo = document.getElementById('m-tipo').value;
+  const fecha = document.getElementById('m-fecha').value;
+  if (!fecha) return toast('Ingresá la fecha','warn');
 
-  let estab=Number(ins.stockEstab),prov=Number(ins.stockProv);
-  let extraNota='';
+  // CASO 1: Ingreso directo a establecimiento (un solo insumo, sin proveedor)
+  if (tipo === 'ingreso_estab'){
+    const insId = document.getElementById('m-ins-simple').value;
+    const qty = parseFloat(document.getElementById('m-qty-simple').value);
+    const nota = document.getElementById('m-nota').value.trim();
+    const ins = S.insumos.find(x => x.id === insId);
+    if (!ins) return toast('Seleccioná un insumo','warn');
+    if (!qty || qty <= 0) return toast('Cantidad inválida','warn');
 
-  let proveedorIngreso='';
-
-  if(tipo==='ingreso_prov'){
-    proveedorIngreso=document.getElementById('m-proveedor').value.trim();
-    if(!proveedorIngreso)return toast('Ingresá el proveedor','warn');
-    prov+=qty;
-    // Registrar la compra
-    S.facturas=[{id:uid(),fecha,proveedor:proveedorIngreso,insumoId:ins.id,insumoNombre:ins.nombre,cantidad:qty,unidad:ins.unidad,creadaEn:now()},...S.facturas];
-    extraNota=`Compra a ${proveedorIngreso} (${fecha})`;
-  } else if(tipo==='retiro_prov'){
-    if(qty>prov)return toast('Stock insuficiente en proveedor','danger');
-    const numRemito=document.getElementById('m-remito').value.trim();
-    if(!numRemito)return toast('Ingresá el N° de remito','warn');
-    prov-=qty;estab+=qty;
-    // Registrar el remito
-    S.remitos=[{id:uid(),fecha,numero:numRemito,proveedor:ins.proveedor||'',insumoId:ins.id,insumoNombre:ins.nombre,cantidad:qty,unidad:ins.unidad,creadoEn:now()},...S.remitos];
-    extraNota=`Retiro con remito ${numRemito} (${fecha})`;
-  } else if(tipo==='ingreso_estab'){
-    estab+=qty;
-    extraNota=`Ingreso directo a establecimiento (${fecha})`;
+    S.insumos = S.insumos.map(x => x.id === insId ? {...x, stockEstab: Number(x.stockEstab) + qty} : x);
+    const notaBase = `Ingreso directo a establecimiento (${fecha})`;
+    S.movimientos = [{
+      id:uid(), fecha:now(), insumoId:insId, insumoNombre:ins.nombre,
+      tipo:'ingreso_estab', cantidad:qty, unidad:ins.unidad,
+      nota: nota ? `${notaBase} — ${nota}` : notaBase
+    }, ...S.movimientos];
+    saveState(); closeModal(); render();
+    toast('Movimiento registrado ✓');
+    return;
   }
 
-  S.insumos=S.insumos.map(x=>{
-    if(x.id!==insId) return x;
-    const updated={...x,stockEstab:estab,stockProv:prov};
-    // Si fue un ingreso a proveedor y el insumo no tenía proveedor asignado, lo guardamos
-    if(proveedorIngreso && !x.proveedor) updated.proveedor=proveedorIngreso;
-    return updated;
-  });
-  S.movimientos=[{id:uid(),fecha:now(),insumoId:insId,insumoNombre:ins.nombre,tipo,cantidad:qty,unidad:ins.unidad,nota:nota?`${extraNota} — ${nota}`:extraNota},...S.movimientos];
-  saveState();closeModal();render();toast('Movimiento registrado ✓');
+  // CASO 2 y 3: Ingreso/Retiro a proveedor (multi-insumos + documento)
+  const proveedor = document.getElementById('m-proveedor').value;
+  if (!proveedor) return toast('Seleccioná el proveedor','warn');
+
+  // Validar items
+  const itemsValidos = [];
+  for (const item of movItems){
+    if (!item.insumoId && !item.cantidad) continue;
+    if (!item.insumoId) return toast('Falta seleccionar insumo en alguna línea','warn');
+    const cant = parseFloat(item.cantidad);
+    if (!cant || cant <= 0) return toast('La cantidad debe ser mayor a 0 en todas las líneas','warn');
+    const ins = S.insumos.find(x => x.id === item.insumoId);
+    if (!ins) return toast('Insumo no encontrado','warn');
+    itemsValidos.push({ insumo: ins, cantidad: cant });
+  }
+  if (itemsValidos.length === 0) return toast('Agregá al menos un insumo','warn');
+
+  // Validar documento
+  const docTipo = document.getElementById('m-doc-tipo').value;
+  let docNum = '';
+  if (docTipo !== 'ninguno'){
+    docNum = document.getElementById('m-doc-num').value.trim();
+    if (!docNum){
+      const lbl = docTipo === 'factura' ? 'N° de Factura' : 'N° de Remito';
+      return toast(`Ingresá el ${lbl}`, 'warn');
+    }
+  }
+
+  // Si es retiro, validar que haya stock proveedor suficiente
+  if (tipo === 'retiro_prov'){
+    for (const { insumo, cantidad } of itemsValidos){
+      if (cantidad > Number(insumo.stockProv)){
+        return toast(`Stock insuficiente en proveedor: ${insumo.nombre} (necesita ${fmtN(cantidad)} ${insumo.unidad}, hay ${fmtN(insumo.stockProv)})`, 'danger');
+      }
+    }
+  }
+
+  // Texto del documento para las notas
+  let docTxt = '';
+  if (docTipo === 'factura') docTxt = `Factura ${docNum}`;
+  else if (docTipo === 'remito') docTxt = `Remito ${docNum}`;
+
+  // Aplicar movimientos
+  for (const { insumo, cantidad } of itemsValidos){
+    if (tipo === 'ingreso_prov'){
+      // Suma al proveedor
+      S.insumos = S.insumos.map(x => x.id === insumo.id
+        ? { ...x, stockProv: Number(x.stockProv) + cantidad, proveedor: x.proveedor || proveedor }
+        : x);
+      // Registrar compra (sin documento) — siempre se registra
+      S.facturas = [{
+        id: uid(), fecha, proveedor,
+        insumoId: insumo.id, insumoNombre: insumo.nombre,
+        cantidad, unidad: insumo.unidad, creadaEn: now()
+      }, ...S.facturas];
+    } else {
+      // Retiro proveedor → establecimiento
+      S.insumos = S.insumos.map(x => x.id === insumo.id
+        ? { ...x, stockProv: Number(x.stockProv) - cantidad, stockEstab: Number(x.stockEstab) + cantidad }
+        : x);
+    }
+
+    // Si tiene factura, registrarla
+    if (docTipo === 'factura'){
+      S.facturasDoc = [{
+        id: uid(), fecha, numero: docNum, proveedor,
+        insumoId: insumo.id, insumoNombre: insumo.nombre,
+        cantidad, unidad: insumo.unidad, tipo, creadoEn: now()
+      }, ...S.facturasDoc];
+    }
+    // Si tiene remito, registrarlo
+    if (docTipo === 'remito'){
+      S.remitos = [{
+        id: uid(), fecha, numero: docNum, proveedor,
+        insumoId: insumo.id, insumoNombre: insumo.nombre,
+        cantidad, unidad: insumo.unidad, creadoEn: now()
+      }, ...S.remitos];
+    }
+
+    // Registrar movimiento
+    const accion = tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
+    const notaBase = `${accion} ${proveedor} (${fecha})`;
+    const notaCompleta = docTxt ? `${notaBase} — ${docTxt}` : notaBase;
+    S.movimientos = [{
+      id:uid(), fecha:now(), insumoId:insumo.id, insumoNombre:insumo.nombre,
+      tipo, cantidad, unidad: insumo.unidad, nota: notaCompleta
+    }, ...S.movimientos];
+  }
+
+  saveState(); closeModal(); render();
+  toast(`Movimiento registrado ✓ — ${itemsValidos.length} ${itemsValidos.length===1?'insumo':'insumos'}`);
 }
 
 // ────────────────────────────────────────────────────────
@@ -3758,6 +3955,7 @@ async function cargarYRenderizar(){
       ordenes: resp.datos.ordenes || [],
       movimientos: resp.datos.movimientos || [],
       facturas: resp.datos.compras || [],   // mapeo nombre interno
+      facturasDoc: resp.datos.facturas || [],
       remitos: resp.datos.remitos || [],
       usuarios: resp.datos.usuarios || [],
     };
@@ -3783,6 +3981,44 @@ async function cargarYRenderizar(){
         }));
         // Disparar sync para guardar los proveedores migrados al backend
         saveState();
+      }
+    }
+
+    // Migración (Opción B): si facturasDoc está vacío, buscar movimientos de compra que mencionen
+    // "Factura" en la nota y crear los registros correspondientes en facturasDoc
+    if ((S.facturasDoc||[]).length === 0 && (S.movimientos||[]).length > 0){
+      const facturasMigradas = [];
+      for (const m of S.movimientos){
+        const nota = m.nota || '';
+        // Buscar patrón "Factura XXXX" en la nota de movimientos de tipo ingreso_prov
+        const matchFact = nota.match(/Factura\s+([^\s—]+)/i);
+        if (matchFact && (m.tipo === 'ingreso_prov' || m.tipo === 'retiro_prov')){
+          const numFact = matchFact[1];
+          // Extraer proveedor de la nota (formato típico: "Compra a XXX (fecha)")
+          const matchProv = nota.match(/(?:Compra a|Retiro de)\s+([^(]+?)\s*\(/);
+          const proveedor = matchProv ? matchProv[1].trim() : '';
+          // Extraer fecha de la nota
+          const matchFecha = nota.match(/\((\d{4}-\d{2}-\d{2})\)/);
+          const fecha = matchFecha ? matchFecha[1] : (m.fecha || '');
+          facturasMigradas.push({
+            id: uid(),
+            fecha,
+            numero: numFact,
+            proveedor,
+            insumoId: m.insumoId,
+            insumoNombre: m.insumoNombre,
+            cantidad: m.cantidad,
+            unidad: m.unidad,
+            tipo: m.tipo,
+            creadoEn: m.fecha || now(),
+            migrado: true
+          });
+        }
+      }
+      if (facturasMigradas.length > 0){
+        S.facturasDoc = facturasMigradas;
+        saveState();
+        console.log(`Migradas ${facturasMigradas.length} facturas históricas`);
       }
     }
     // Mostrar nav y renderizar
