@@ -590,6 +590,7 @@ function renderInsumos(){
       <div class="row" style="gap:8px;flex-wrap:wrap">
         <button class="btn-secondary btn-sm" onclick="openProveedoresModal()">🏢 Proveedores</button>
         <button class="btn-secondary btn-sm" onclick="openCategoriasModal()">🏷️ Categ./Unid.</button>
+        <button class="btn-secondary btn-sm" onclick="limpiarMovimientosHuerfanos()">🔧 Limpiar mov. huérfanos</button>
         <button class="btn-warn btn-sm" onclick="openMovModal()">+ Movimiento</button>
         <button class="btn-warn btn-sm" onclick="openCompraMultiple()">+ Compra Múltiple</button>
         <button class="btn-primary btn-sm" onclick="openNewInsumo()">+ Insumo/Grano</button>
@@ -1225,6 +1226,50 @@ async function delUnidad(idx){
   saveState();
   toast('Unidad eliminada');
   renderCategoriasModal();
+}
+
+// Detecta y elimina movimientos asociados a órdenes que ya no existen
+async function limpiarMovimientosHuerfanos(){
+  // Conjunto de números de órdenes existentes (activas + en papelera)
+  const ordenesExistentes = new Set();
+  S.ordenes.forEach(o => { if (o.numero) ordenesExistentes.add(o.numero); });
+  (S.papelera||[]).forEach(item => {
+    if (item.tipo === 'orden' && item.datos && item.datos.numero) {
+      ordenesExistentes.add(item.datos.numero);
+    }
+  });
+
+  // Buscar movimientos que mencionen una orden (Orden OT-XXXX) pero que esa orden no exista
+  const huerfanos = [];
+  for (const m of S.movimientos){
+    const nota = m.nota || '';
+    const match = nota.match(/Orden\s+(OT-\d+)/);
+    if (match){
+      const numOrden = match[1];
+      if (!ordenesExistentes.has(numOrden)){
+        huerfanos.push({ mov: m, numOrden });
+      }
+    }
+  }
+
+  if (huerfanos.length === 0){
+    return toast('No hay movimientos huérfanos para limpiar ✓','success');
+  }
+
+  // Mostrar resumen y pedir confirmación
+  const ordenesUnicas = [...new Set(huerfanos.map(h => h.numOrden))];
+  const detalleOrdenes = ordenesUnicas.slice(0, 10).join(', ') + (ordenesUnicas.length > 10 ? '...' : '');
+  if (!await confirmar(
+    `Se encontraron ${huerfanos.length} movimientos asociados a ${ordenesUnicas.length} ${ordenesUnicas.length===1?'orden':'órdenes'} que ya no ${ordenesUnicas.length===1?'existe':'existen'} (${detalleOrdenes}). ¿Eliminarlos? Esta acción no se puede deshacer.`,
+    {textoConfirmar:'Eliminar movimientos', tipoConfirmar:'danger'}
+  )) return;
+
+  // Eliminar
+  const idsAEliminar = new Set(huerfanos.map(h => h.mov.id));
+  S.movimientos = S.movimientos.filter(m => !idsAEliminar.has(m.id));
+  saveState();
+  render();
+  toast(`${huerfanos.length} movimientos huérfanos eliminados ✓`);
 }
 
 function openMovModal(){
@@ -2622,21 +2667,9 @@ async function eliminarOrden(id){
     return ins;
   });
 
-  // Registrar movimientos de devolución (uno por insumo) para trazabilidad
-  for (const insId in devoluciones){
-    const ins = S.insumos.find(x => x.id === insId);
-    if (!ins) continue;
-    S.movimientos = [{
-      id: uid(),
-      fecha: now(),
-      insumoId: insId,
-      insumoNombre: ins.nombre,
-      tipo: 'ingreso_estab',
-      cantidad: devoluciones[insId],
-      unidad: ins.unidad,
-      nota: `Devolución por eliminación de orden ${o.numero}`
-    }, ...S.movimientos];
-  }
+  // ELIMINAR los movimientos originales asociados a esta orden (no agregar devoluciones)
+  // Esto deja la lista de movimientos limpia y evita duplicaciones futuras
+  S.movimientos = S.movimientos.filter(m => !(m.nota||'').includes(`Orden ${o.numero}`));
 
   // Si tenía remito asociado, lo eliminamos también
   if (o.documento && o.documento.tipo === 'remito'){
@@ -2893,11 +2926,13 @@ function saveNewOrden(){
       }
       return ins;
     });
-    // 2) Eliminar remitos asociados a la orden vieja (si los tenía)
+    // 2) Eliminar los movimientos asociados a la orden vieja (evita duplicación)
+    S.movimientos = S.movimientos.filter(m => !(m.nota||'').includes(`Orden ${ordenAnterior.numero}`));
+    // 3) Eliminar remitos asociados a la orden vieja (si los tenía)
     if (ordenAnterior.documento && ordenAnterior.documento.tipo === 'remito'){
       S.remitos = S.remitos.filter(r => !(r.numero === ordenAnterior.documento.numero && (r.proveedor||'').includes(`Orden ${ordenAnterior.numero}`)));
     }
-    // 3) Eliminar la orden vieja del listado (la vamos a recrear más abajo)
+    // 4) Eliminar la orden vieja del listado (la vamos a recrear más abajo)
     S.ordenes = S.ordenes.filter(x => x.id !== editandoOrdenId);
   }
 
