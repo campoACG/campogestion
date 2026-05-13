@@ -662,34 +662,37 @@ function renderInsumos(){
       <div style="flex:1;min-width:280px">
         <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">🛒 COMPRAS</h3>
         <div class="card" style="overflow-x:auto">
-          <table><thead><tr><th>Fecha</th><th>Proveedor / Insumo</th><th>Cant.</th></tr></thead>
+          <table><thead><tr><th>Fecha</th><th>Proveedor / Insumo</th><th>Cant.</th><th></th></tr></thead>
           <tbody>${S.facturas.slice(0,10).map(f=>`<tr>
             <td class="mono" style="font-size:11px;color:var(--muted)">${esc(f.fecha)}</td>
             <td style="font-size:12px"><b>${esc(f.proveedor)}</b><br><span style="color:var(--muted);font-size:11px">${esc(f.insumoNombre)}</span></td>
             <td class="mono" style="font-size:12px">${fmtN(f.cantidad)} ${esc(f.unidad)}</td>
-          </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin compras</td></tr>'}</tbody></table>
+            <td style="text-align:right"><button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarCompra('${f.id}')" title="Eliminar">🗑</button></td>
+          </tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin compras</td></tr>'}</tbody></table>
         </div>
       </div>
       <div style="flex:1;min-width:280px">
         <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">🧾 FACTURAS</h3>
         <div class="card" style="overflow-x:auto">
-          <table><thead><tr><th>Fecha</th><th>Factura / Insumo</th><th>Cant.</th></tr></thead>
+          <table><thead><tr><th>Fecha</th><th>Factura / Insumo</th><th>Cant.</th><th></th></tr></thead>
           <tbody>${(S.facturasDoc||[]).slice(0,10).map(f=>`<tr>
             <td class="mono" style="font-size:11px;color:var(--muted)">${esc(f.fecha)}</td>
             <td style="font-size:12px"><b>${esc(f.numero)}</b><br><span style="color:var(--muted);font-size:11px">${esc(f.proveedor)} · ${esc(f.insumoNombre)}</span></td>
             <td class="mono" style="font-size:12px">${fmtN(f.cantidad)} ${esc(f.unidad)}</td>
-          </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin facturas</td></tr>'}</tbody></table>
+            <td style="text-align:right"><button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarFactura('${f.id}')" title="Eliminar">🗑</button></td>
+          </tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin facturas</td></tr>'}</tbody></table>
         </div>
       </div>
       <div style="flex:1;min-width:280px">
         <h3 style="font-size:14px;font-weight:700;margin-bottom:10px;color:var(--muted)">📄 REMITOS</h3>
         <div class="card" style="overflow-x:auto">
-          <table><thead><tr><th>Fecha</th><th>Remito / Insumo</th><th>Cant.</th></tr></thead>
+          <table><thead><tr><th>Fecha</th><th>Remito / Insumo</th><th>Cant.</th><th></th></tr></thead>
           <tbody>${S.remitos.slice(0,10).map(r=>`<tr>
             <td class="mono" style="font-size:11px;color:var(--muted)">${esc(r.fecha)}</td>
             <td style="font-size:12px"><b>${esc(r.numero)}</b><br><span style="color:var(--muted);font-size:11px">${esc(r.insumoNombre)}</span></td>
             <td class="mono" style="font-size:12px">${fmtN(r.cantidad)} ${esc(r.unidad)}</td>
-          </tr>`).join('')||'<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin remitos</td></tr>'}</tbody></table>
+            <td style="text-align:right"><button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarRemito('${r.id}')" title="Eliminar">🗑</button></td>
+          </tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin remitos</td></tr>'}</tbody></table>
         </div>
       </div>
     </div>`;
@@ -725,6 +728,24 @@ function saveNewInsumo(){
   saveState();closeModal();render();toast('Insumo creado ✓ — Cargá stock desde "+ Movimiento"');
 }
 
+// Calcula el stock por proveedor de un insumo, sumando compras y restando retiros
+function calcularStockPorProveedor(insumoId){
+  const stockPorProv = {}; // {proveedor: cantidad}
+  // Compras (ingresos a proveedor) → suman stock al proveedor
+  (S.facturas || []).forEach(f => {
+    if (f.insumoId === insumoId && f.proveedor){
+      stockPorProv[f.proveedor] = (stockPorProv[f.proveedor] || 0) + Number(f.cantidad);
+    }
+  });
+  // Retiros con remito (proveedor → establecimiento) → restan del proveedor
+  (S.remitos || []).forEach(r => {
+    if (r.insumoId === insumoId && r.proveedor && !(r.proveedor||'').startsWith('Salida')){
+      stockPorProv[r.proveedor] = (stockPorProv[r.proveedor] || 0) - Number(r.cantidad);
+    }
+  });
+  return stockPorProv;
+}
+
 function editInsumo(id){
   const i=S.insumos.find(x=>x.id===id);if(!i)return;
   const cats=S.categorias;
@@ -732,6 +753,35 @@ function editInsumo(id){
   // Si el insumo tiene una categoría/unidad que ya no existe en la lista, la incluimos para no perderla
   const allCats = cats.includes(i.categoria) || !i.categoria ? cats : [i.categoria, ...cats];
   const allUnits = units.includes(i.unidad) || !i.unidad ? units : [i.unidad, ...units];
+
+  // Calcular desglose de stock por proveedor
+  const stockPorProv = calcularStockPorProveedor(id);
+  const proveedoresConStock = Object.entries(stockPorProv)
+    .filter(([_,cant]) => Math.abs(cant) > 0.001)
+    .sort((a,b) => a[0].localeCompare(b[0]));
+  const totalProv = proveedoresConStock.reduce((sum, [_,cant]) => sum + cant, 0);
+
+  let desgloseHtml = '';
+  if (proveedoresConStock.length > 0){
+    const filas = proveedoresConStock.map(([prov, cant]) => `
+      <div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px">
+        <span>🏢 ${esc(prov)}</span>
+        <span class="mono" style="color:${cant<0?'var(--danger)':'var(--text)'};font-weight:600">${fmtN(cant)} ${esc(i.unidad)}</span>
+      </div>`).join('');
+    desgloseHtml = `<div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px">
+      <div style="font-size:10px;color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">📊 Desglose por proveedor</div>
+      ${filas}
+      <div style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;display:flex;justify-content:space-between;font-size:12px;font-weight:700">
+        <span>Total calculado:</span>
+        <span class="mono" style="color:var(--accent)">${fmtN(totalProv)} ${esc(i.unidad)}</span>
+      </div>
+    </div>`;
+  } else {
+    desgloseHtml = `<div style="background:var(--bg);border:1px dashed var(--border);border-radius:8px;padding:10px;margin-bottom:10px;font-size:12px;color:var(--muted);text-align:center;font-style:italic">
+      Sin stock cargado en ningún proveedor para este insumo
+    </div>`;
+  }
+
   showModal('Editar Insumo',`
     <div class="field"><label>Nombre</label><input id="e-nombre" value="${esc(i.nombre)}"></div>
     <div class="row" style="gap:10px">
@@ -742,14 +792,11 @@ function editInsumo(id){
     </div>
     <div class="row" style="gap:10px">
       <div class="field" style="flex:1"><label>Stock Establecimiento</label><input id="e-estab" type="number" value="${i.stockEstab}"></div>
-      <div class="field" style="flex:1"><label>Stock Proveedor</label><input id="e-prov" type="number" value="${i.stockProv}"></div>
+      <div class="field" style="flex:1"><label>Stock Proveedor (total)</label><input id="e-prov" type="number" value="${i.stockProv}"></div>
     </div>
-    <div class="field"><label>Proveedor</label>
-      <select id="e-proveedor">
-        <option value="">— Sin asignar —</option>
-        ${S.proveedores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${esc(p.nombre)}"${p.nombre===i.proveedor?' selected':''}>${esc(p.nombre)}</option>`).join('')}
-        ${i.proveedor && !S.proveedores.some(p=>p.nombre===i.proveedor)?`<option value="${esc(i.proveedor)}" selected>${esc(i.proveedor)} (sin lista)</option>`:''}
-      </select>
+    ${desgloseHtml}
+    <div style="background:var(--surface);border-radius:6px;padding:8px;font-size:11px;color:var(--muted);margin-bottom:10px">
+      💡 El desglose se calcula automáticamente desde las compras y remitos cargados. El "Stock Proveedor (total)" es editable por si necesitás ajustar manualmente.
     </div>
     <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
       <button class="btn-secondary" onclick="closeModal()">Cancelar</button>
@@ -763,8 +810,7 @@ function saveEditInsumo(id){
   S.insumos=S.insumos.map(x=>x.id===id?{...x,nombre,categoria:document.getElementById('e-cat').value,
     unidad:document.getElementById('e-unidad').value,
     stockEstab:parseFloat(document.getElementById('e-estab').value)||0,
-    stockProv:parseFloat(document.getElementById('e-prov').value)||0,
-    proveedor:document.getElementById('e-proveedor').value.trim()}:x);
+    stockProv:parseFloat(document.getElementById('e-prov').value)||0}:x);
   saveState();closeModal();render();toast('Insumo actualizado ✓');
 }
 
@@ -3515,6 +3561,9 @@ const PAPELERA_TIPOS = {
   contratista:  { array:'contratistas', label:'Contratista',         icon:'👷' },
   proveedor:    { array:'proveedores',  label:'Proveedor',           icon:'🏢' },
   orden:        { array:'ordenes',      label:'Orden de Trabajo',    icon:'📋' },
+  compra:       { array:'facturas',     label:'Compra',              icon:'🛒' },
+  factura:      { array:'facturasDoc',  label:'Factura',             icon:'🧾' },
+  remito:       { array:'remitos',      label:'Remito',              icon:'📄' },
 };
 
 // Mover un objeto a la papelera (sin eliminarlo aún)
@@ -3527,6 +3576,108 @@ function moverAPapelera(tipo, registro){
     datos: JSON.parse(JSON.stringify(registro))  // copia profunda
   };
   S.papelera = [item, ...(S.papelera || [])];
+}
+
+// Eliminar una compra (con reversión de stock proveedor)
+async function eliminarCompra(id){
+  const c = S.facturas.find(x => x.id === id);
+  if (!c) return;
+  const ins = S.insumos.find(x => x.id === c.insumoId);
+  if (!ins) {
+    if (!await confirmar(`Eliminar compra de ${c.proveedor} (${fmtN(c.cantidad)} ${c.unidad})? El insumo ya no existe, no se podrá revertir el stock.`)) return;
+    moverAPapelera('compra', c);
+    S.facturas = S.facturas.filter(x => x.id !== id);
+    // Limpiar movimientos asociados
+    S.movimientos = S.movimientos.filter(m => !(m.insumoId === c.insumoId && (m.nota||'').includes(`Compra a ${c.proveedor}`) && Number(m.cantidad) === Number(c.cantidad) && m.fecha.slice(0,10) === c.fecha));
+    saveState(); render();
+    toast('Compra enviada a papelera');
+    return;
+  }
+  // Verificar que haya stock proveedor suficiente para revertir
+  if (Number(c.cantidad) > Number(ins.stockProv)){
+    return toast(`No se puede eliminar: stock proveedor insuficiente de ${ins.nombre} (se intentan quitar ${fmtN(c.cantidad)} ${ins.unidad}, hay ${fmtN(ins.stockProv)}). Tal vez ya se retiró parte al establecimiento.`,'danger');
+  }
+  if (!await confirmar(`¿Eliminar compra de ${ins.nombre} a ${c.proveedor} (${fmtN(c.cantidad)} ${ins.unidad})? Se revertirá el stock del proveedor. La compra irá a la 🗑️ Papelera.`)) return;
+  // Revertir stock proveedor
+  S.insumos = S.insumos.map(x => x.id === c.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(c.cantidad) } : x);
+  // Eliminar movimientos de stock asociados (los que mencionan al proveedor con esa cantidad y fecha)
+  S.movimientos = S.movimientos.filter(m => !(m.insumoId === c.insumoId && (m.nota||'').includes(`Compra a ${c.proveedor}`) && Number(m.cantidad) === Number(c.cantidad)));
+  // Mover a papelera
+  moverAPapelera('compra', c);
+  S.facturas = S.facturas.filter(x => x.id !== id);
+  saveState(); render();
+  toast('Compra enviada a papelera — stock revertido ✓');
+}
+
+// Eliminar una factura (con reversión)
+async function eliminarFactura(id){
+  const f = (S.facturasDoc||[]).find(x => x.id === id);
+  if (!f) return;
+  const ins = S.insumos.find(x => x.id === f.insumoId);
+  if (!ins){
+    if (!await confirmar(`Eliminar factura ${f.numero}? El insumo ya no existe, no se podrá revertir el stock.`)) return;
+    moverAPapelera('factura', f);
+    S.facturasDoc = S.facturasDoc.filter(x => x.id !== id);
+    saveState(); render();
+    toast('Factura enviada a papelera');
+    return;
+  }
+  // Verificar stock según el tipo de movimiento original
+  if (f.tipo === 'ingreso_prov'){
+    if (Number(f.cantidad) > Number(ins.stockProv)){
+      return toast(`No se puede eliminar: stock proveedor insuficiente de ${ins.nombre}. Tal vez ya se retiró parte al establecimiento.`,'danger');
+    }
+  } else if (f.tipo === 'retiro_prov'){
+    if (Number(f.cantidad) > Number(ins.stockEstab)){
+      return toast(`No se puede eliminar: stock establecimiento insuficiente de ${ins.nombre}. Tal vez ya se aplicó parte en una orden.`,'danger');
+    }
+  }
+  if (!await confirmar(`¿Eliminar factura ${f.numero} (${ins.nombre} · ${fmtN(f.cantidad)} ${ins.unidad})? Se revertirá el stock. La factura irá a la 🗑️ Papelera.`)) return;
+  // Revertir stock
+  if (f.tipo === 'ingreso_prov'){
+    S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(f.cantidad) } : x);
+  } else if (f.tipo === 'retiro_prov'){
+    S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) + Number(f.cantidad), stockEstab: Number(x.stockEstab) - Number(f.cantidad) } : x);
+  }
+  // Eliminar movimiento asociado
+  S.movimientos = S.movimientos.filter(m => !(m.insumoId === f.insumoId && (m.nota||'').includes(`Factura ${f.numero}`)));
+  // Mover a papelera
+  moverAPapelera('factura', f);
+  S.facturasDoc = S.facturasDoc.filter(x => x.id !== id);
+  saveState(); render();
+  toast('Factura enviada a papelera — stock revertido ✓');
+}
+
+// Eliminar un remito (con reversión)
+async function eliminarRemito(id){
+  const r = S.remitos.find(x => x.id === id);
+  if (!r) return;
+  const ins = S.insumos.find(x => x.id === r.insumoId);
+  if (!ins){
+    if (!await confirmar(`Eliminar remito ${r.numero}? El insumo ya no existe, no se podrá revertir el stock.`)) return;
+    moverAPapelera('remito', r);
+    S.remitos = S.remitos.filter(x => x.id !== id);
+    saveState(); render();
+    toast('Remito enviado a papelera');
+    return;
+  }
+  // El remito significa: salida del proveedor + entrada al establecimiento.
+  // Para revertirlo: devolver al proveedor + sacar del establecimiento.
+  if (Number(r.cantidad) > Number(ins.stockEstab)){
+    return toast(`No se puede eliminar: stock establecimiento insuficiente de ${ins.nombre} (se intentan quitar ${fmtN(r.cantidad)} ${ins.unidad}, hay ${fmtN(ins.stockEstab)}). Tal vez ya se aplicó parte en una orden.`,'danger');
+  }
+  if (!await confirmar(`¿Eliminar remito ${r.numero} (${ins.nombre} · ${fmtN(r.cantidad)} ${ins.unidad})? Se revertirá el stock (vuelve al proveedor). El remito irá a la 🗑️ Papelera.`)) return;
+  // Revertir
+  S.insumos = S.insumos.map(x => x.id === r.insumoId
+    ? { ...x, stockProv: Number(x.stockProv) + Number(r.cantidad), stockEstab: Number(x.stockEstab) - Number(r.cantidad) }
+    : x);
+  // Eliminar movimiento asociado
+  S.movimientos = S.movimientos.filter(m => !(m.insumoId === r.insumoId && (m.nota||'').includes(`Remito ${r.numero}`)));
+  // Mover a papelera
+  moverAPapelera('remito', r);
+  S.remitos = S.remitos.filter(x => x.id !== id);
+  saveState(); render();
+  toast('Remito enviado a papelera — stock revertido ✓');
 }
 
 function renderPapelera(){
@@ -3542,6 +3693,9 @@ function renderPapelera(){
     else if (item.tipo === 'contratista') descripcion = `${datos.nombre || '—'} ${datos.servicio?'· '+datos.servicio:''}`;
     else if (item.tipo === 'proveedor') descripcion = `${datos.nombre || '—'} ${datos.ciudad?'· '+datos.ciudad:''}`;
     else if (item.tipo === 'orden') descripcion = `${datos.numero || '—'} · ${datos.contratista || '—'}`;
+    else if (item.tipo === 'compra') descripcion = `${datos.proveedor || '—'} · ${datos.insumoNombre || '—'} · ${fmtN(datos.cantidad)} ${datos.unidad||''}`;
+    else if (item.tipo === 'factura') descripcion = `Factura ${datos.numero || '—'} · ${datos.proveedor || '—'} · ${datos.insumoNombre || '—'} · ${fmtN(datos.cantidad)} ${datos.unidad||''}`;
+    else if (item.tipo === 'remito') descripcion = `Remito ${datos.numero || '—'} · ${datos.proveedor || '—'} · ${datos.insumoNombre || '—'} · ${fmtN(datos.cantidad)} ${datos.unidad||''}`;
     else descripcion = JSON.stringify(datos).substring(0, 60);
 
     return `<div class="card" style="margin-bottom:10px">
@@ -3637,6 +3791,50 @@ async function restaurarPapelera(itemId){
         unidad: ins.unidad,
         nota: `Restauración de orden ${o.numero} desde papelera`
       }, ...S.movimientos];
+    }
+  }
+
+  // Si era una compra (ingreso a proveedor), volvemos a sumar stockProv
+  if (item.tipo === 'compra'){
+    const c = item.datos;
+    S.insumos = S.insumos.map(ins => {
+      if (ins.id === c.insumoId){
+        return { ...ins, stockProv: Number(ins.stockProv) + Number(c.cantidad) };
+      }
+      return ins;
+    });
+  }
+
+  // Si era una factura (documento), volvemos a sumar stockProv si era ingreso_prov,
+  // o re-aplicamos el cambio si era retiro_prov
+  if (item.tipo === 'factura'){
+    const f = item.datos;
+    const ins = S.insumos.find(x => x.id === f.insumoId);
+    if (ins){
+      if (f.tipo === 'ingreso_prov'){
+        S.insumos = S.insumos.map(x => x.id === f.insumoId
+          ? { ...x, stockProv: Number(x.stockProv) + Number(f.cantidad) } : x);
+      } else if (f.tipo === 'retiro_prov'){
+        // Verificar stock proveedor
+        if (Number(f.cantidad) > Number(ins.stockProv)){
+          return toast(`No se puede restaurar: stock proveedor insuficiente de ${ins.nombre}`,'danger');
+        }
+        S.insumos = S.insumos.map(x => x.id === f.insumoId
+          ? { ...x, stockProv: Number(x.stockProv) - Number(f.cantidad), stockEstab: Number(x.stockEstab) + Number(f.cantidad) } : x);
+      }
+    }
+  }
+
+  // Si era un remito, volvemos a aplicar el movimiento de retiro
+  if (item.tipo === 'remito'){
+    const r = item.datos;
+    const ins = S.insumos.find(x => x.id === r.insumoId);
+    if (ins){
+      if (Number(r.cantidad) > Number(ins.stockProv)){
+        return toast(`No se puede restaurar: stock proveedor insuficiente de ${ins.nombre} (necesita ${fmtN(r.cantidad)} ${ins.unidad}, hay ${fmtN(ins.stockProv)})`,'danger');
+      }
+      S.insumos = S.insumos.map(x => x.id === r.insumoId
+        ? { ...x, stockProv: Number(x.stockProv) - Number(r.cantidad), stockEstab: Number(x.stockEstab) + Number(r.cantidad) } : x);
     }
   }
 
