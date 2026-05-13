@@ -679,7 +679,10 @@ function renderInsumos(){
             <td class="mono" style="font-size:11px;color:var(--muted)">${esc(f.fecha)}</td>
             <td style="font-size:12px"><b>${esc(f.numero)}</b><br><span style="color:var(--muted);font-size:11px">${esc(f.proveedor)} · ${esc(f.insumoNombre)}</span></td>
             <td class="mono" style="font-size:12px">${fmtN(f.cantidad)} ${esc(f.unidad)}</td>
-            <td style="text-align:right"><button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarFactura('${f.id}')" title="Eliminar">🗑</button></td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn-sm btn-secondary" style="padding:2px 6px;font-size:11px;margin-right:2px" onclick="editarFactura('${f.id}')" title="Editar">✏️</button>
+              <button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarFactura('${f.id}')" title="Eliminar">🗑</button>
+            </td>
           </tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin facturas</td></tr>'}</tbody></table>
         </div>
       </div>
@@ -691,7 +694,10 @@ function renderInsumos(){
             <td class="mono" style="font-size:11px;color:var(--muted)">${esc(r.fecha)}</td>
             <td style="font-size:12px"><b>${esc(r.numero)}</b><br><span style="color:var(--muted);font-size:11px">${esc(r.insumoNombre)}</span></td>
             <td class="mono" style="font-size:12px">${fmtN(r.cantidad)} ${esc(r.unidad)}</td>
-            <td style="text-align:right"><button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarRemito('${r.id}')" title="Eliminar">🗑</button></td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn-sm btn-secondary" style="padding:2px 6px;font-size:11px;margin-right:2px" onclick="editarRemito('${r.id}')" title="Editar">✏️</button>
+              <button class="btn-sm btn-danger" style="padding:2px 6px;font-size:11px" onclick="eliminarRemito('${r.id}')" title="Eliminar">🗑</button>
+            </td>
           </tr>`).join('')||'<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px;font-size:12px">Sin remitos</td></tr>'}</tbody></table>
         </div>
       </div>
@@ -3767,6 +3773,262 @@ async function eliminarRemito(id){
 
   saveState(); render();
   toast('Remito y registros asociados enviados a papelera ✓');
+}
+
+// ── Edición de Facturas y Remitos ───────────────────────────────────────────
+
+function editarFactura(id){
+  const f = (S.facturasDoc||[]).find(x => x.id === id);
+  if (!f) return;
+  const ins = S.insumos.find(x => x.id === f.insumoId);
+
+  const provOpts = S.proveedores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${esc(p.nombre)}"${p.nombre===f.proveedor?' selected':''}>${esc(p.nombre)}</option>`).join('');
+  // Si el proveedor original no está en la lista de proveedores, lo agregamos
+  const provOriginalEnLista = S.proveedores.some(p => p.nombre === f.proveedor);
+  const provOpcionalOriginal = (f.proveedor && !provOriginalEnLista) ? `<option value="${esc(f.proveedor)}" selected>${esc(f.proveedor)} (sin lista)</option>` : '';
+
+  showModal('Editar Factura',`
+    <div style="background:var(--surface);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);margin-bottom:14px">
+      📦 ${esc(ins?ins.nombre:f.insumoNombre)} · Tipo: ${f.tipo==='ingreso_prov'?'Ingreso a proveedor':'Retiro de proveedor'}
+      <br>💡 Si necesitás cambiar el insumo o el tipo, eliminá esta factura y creá una nueva.
+    </div>
+
+    <div class="field"><label>N° de Factura</label>
+      <input id="ef-numero" value="${esc(f.numero)}">
+    </div>
+
+    <div class="row" style="gap:10px">
+      <div class="field" style="flex:1"><label>Fecha</label>
+        <input id="ef-fecha" type="date" value="${esc(f.fecha)}">
+      </div>
+      <div class="field" style="flex:1"><label>Cantidad (${esc(f.unidad)})</label>
+        <input id="ef-cantidad" type="number" step="0.01" value="${f.cantidad}">
+      </div>
+    </div>
+
+    <div class="field"><label>Proveedor</label>
+      <select id="ef-prov">
+        ${provOpcionalOriginal}
+        ${provOpts}
+      </select>
+    </div>
+
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
+      <button class="btn-secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn-primary" onclick="guardarEdicionFactura('${id}')">Guardar</button>
+    </div>`);
+}
+
+function guardarEdicionFactura(id){
+  const f = (S.facturasDoc||[]).find(x => x.id === id);
+  if (!f) return;
+
+  const nuevoNumero = document.getElementById('ef-numero').value.trim();
+  const nuevaFecha = document.getElementById('ef-fecha').value;
+  const nuevaCantidad = parseFloat(document.getElementById('ef-cantidad').value);
+  const nuevoProveedor = document.getElementById('ef-prov').value;
+
+  if (!nuevoNumero) return toast('Ingresá el N° de factura','warn');
+  if (!nuevaFecha) return toast('Ingresá la fecha','warn');
+  if (!nuevaCantidad || nuevaCantidad <= 0) return toast('Cantidad inválida','warn');
+  if (!nuevoProveedor) return toast('Seleccioná un proveedor','warn');
+
+  // Diferencia de cantidad
+  const diff = nuevaCantidad - Number(f.cantidad);
+  const ins = S.insumos.find(x => x.id === f.insumoId);
+
+  // Validar stock si cambia la cantidad
+  if (diff !== 0 && ins){
+    if (f.tipo === 'ingreso_prov'){
+      // Si se REDUCE la cantidad de un ingreso, hay que sacar de stockProv (diff < 0 → -diff > 0 a quitar)
+      if (diff < 0 && Math.abs(diff) > Number(ins.stockProv)){
+        return toast(`No hay stock proveedor suficiente para reducir la cantidad. Hay ${fmtN(ins.stockProv)} ${ins.unidad}, se intentan quitar ${fmtN(Math.abs(diff))} ${ins.unidad}.`,'danger');
+      }
+      // Aplicar: sumar diff al stockProv (puede ser positivo o negativo)
+      S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) + diff } : x);
+    } else if (f.tipo === 'retiro_prov'){
+      // Si se AUMENTA la cantidad de un retiro: necesito más stock proveedor para sacar
+      if (diff > 0 && diff > Number(ins.stockProv)){
+        return toast(`No hay stock proveedor suficiente para aumentar el retiro. Hay ${fmtN(ins.stockProv)} ${ins.unidad}.`,'danger');
+      }
+      // Si se REDUCE: hay que devolver del establecimiento, validar que haya
+      if (diff < 0 && Math.abs(diff) > Number(ins.stockEstab)){
+        return toast(`No hay stock establecimiento suficiente para reducir el retiro. Hay ${fmtN(ins.stockEstab)} ${ins.unidad}.`,'danger');
+      }
+      // Aplicar: -diff a stockProv, +diff a stockEstab
+      S.insumos = S.insumos.map(x => x.id === f.insumoId ? {
+        ...x,
+        stockProv: Number(x.stockProv) - diff,
+        stockEstab: Number(x.stockEstab) + diff
+      } : x);
+    }
+  }
+
+  // Actualizar la factura
+  S.facturasDoc = S.facturasDoc.map(x => x.id === id ? {
+    ...x,
+    numero: nuevoNumero,
+    fecha: nuevaFecha,
+    cantidad: nuevaCantidad,
+    proveedor: nuevoProveedor
+  } : x);
+
+  // Actualizar relacionados (por linkId o por coincidencia)
+  if (f.linkId){
+    // Versión nueva: usa linkId
+    S.facturas = (S.facturas||[]).map(c => c.linkId === f.linkId ? {
+      ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
+    } : c);
+    S.remitos = (S.remitos||[]).map(r => r.linkId === f.linkId ? {
+      ...r, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
+    } : r);
+    S.movimientos = (S.movimientos||[]).map(m => {
+      if (m.linkId !== f.linkId) return m;
+      // Reconstruir la nota
+      const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
+      const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
+      const docTxt = `Factura ${nuevoNumero}`;
+      return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
+    });
+  } else {
+    // Versión vieja: actualizar por coincidencia
+    S.facturas = (S.facturas||[]).map(c => {
+      if (c.insumoId === f.insumoId && c.proveedor === f.proveedor && Number(c.cantidad) === Number(f.cantidad) && c.fecha === f.fecha){
+        return { ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor };
+      }
+      return c;
+    });
+    S.movimientos = (S.movimientos||[]).map(m => {
+      if (m.insumoId === f.insumoId && Number(m.cantidad) === Number(f.cantidad) && (m.nota||'').includes(`Factura ${f.numero}`)){
+        const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
+        const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
+        const docTxt = `Factura ${nuevoNumero}`;
+        return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
+      }
+      return m;
+    });
+  }
+
+  saveState(); closeModal(); render();
+  toast('Factura actualizada ✓');
+}
+
+function editarRemito(id){
+  const r = (S.remitos||[]).find(x => x.id === id);
+  if (!r) return;
+  const ins = S.insumos.find(x => x.id === r.insumoId);
+
+  const provOpts = S.proveedores.slice().sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(p=>`<option value="${esc(p.nombre)}"${p.nombre===r.proveedor?' selected':''}>${esc(p.nombre)}</option>`).join('');
+  const provOriginalEnLista = S.proveedores.some(p => p.nombre === r.proveedor);
+  const provOpcionalOriginal = (r.proveedor && !provOriginalEnLista) ? `<option value="${esc(r.proveedor)}" selected>${esc(r.proveedor)} (sin lista)</option>` : '';
+
+  showModal('Editar Remito',`
+    <div style="background:var(--surface);border-radius:8px;padding:10px;font-size:12px;color:var(--muted);margin-bottom:14px">
+      📦 ${esc(ins?ins.nombre:r.insumoNombre)}
+      <br>💡 Si necesitás cambiar el insumo, eliminá este remito y creá uno nuevo.
+    </div>
+
+    <div class="field"><label>N° de Remito</label>
+      <input id="er-numero" value="${esc(r.numero)}">
+    </div>
+
+    <div class="row" style="gap:10px">
+      <div class="field" style="flex:1"><label>Fecha</label>
+        <input id="er-fecha" type="date" value="${esc(r.fecha)}">
+      </div>
+      <div class="field" style="flex:1"><label>Cantidad (${esc(r.unidad)})</label>
+        <input id="er-cantidad" type="number" step="0.01" value="${r.cantidad}">
+      </div>
+    </div>
+
+    <div class="field"><label>Proveedor</label>
+      <select id="er-prov">
+        ${provOpcionalOriginal}
+        ${provOpts}
+      </select>
+    </div>
+
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px">
+      <button class="btn-secondary" onclick="closeModal()">Cancelar</button>
+      <button class="btn-primary" onclick="guardarEdicionRemito('${id}')">Guardar</button>
+    </div>`);
+}
+
+function guardarEdicionRemito(id){
+  const r = (S.remitos||[]).find(x => x.id === id);
+  if (!r) return;
+
+  const nuevoNumero = document.getElementById('er-numero').value.trim();
+  const nuevaFecha = document.getElementById('er-fecha').value;
+  const nuevaCantidad = parseFloat(document.getElementById('er-cantidad').value);
+  const nuevoProveedor = document.getElementById('er-prov').value;
+
+  if (!nuevoNumero) return toast('Ingresá el N° de remito','warn');
+  if (!nuevaFecha) return toast('Ingresá la fecha','warn');
+  if (!nuevaCantidad || nuevaCantidad <= 0) return toast('Cantidad inválida','warn');
+  if (!nuevoProveedor) return toast('Seleccioná un proveedor','warn');
+
+  // Diferencia de cantidad
+  const diff = nuevaCantidad - Number(r.cantidad);
+  const ins = S.insumos.find(x => x.id === r.insumoId);
+
+  // Un remito = sale del proveedor, entra al establecimiento
+  // Si se AUMENTA: necesito más stock proveedor para sacar
+  // Si se REDUCE: tengo que sacar del establecimiento y devolver al proveedor (validar establecimiento)
+  if (diff !== 0 && ins){
+    if (diff > 0 && diff > Number(ins.stockProv)){
+      return toast(`No hay stock proveedor suficiente para aumentar el remito. Hay ${fmtN(ins.stockProv)} ${ins.unidad}.`,'danger');
+    }
+    if (diff < 0 && Math.abs(diff) > Number(ins.stockEstab)){
+      return toast(`No hay stock establecimiento suficiente para reducir el remito. Hay ${fmtN(ins.stockEstab)} ${ins.unidad}.`,'danger');
+    }
+    // Aplicar: -diff a stockProv, +diff a stockEstab
+    S.insumos = S.insumos.map(x => x.id === r.insumoId ? {
+      ...x,
+      stockProv: Number(x.stockProv) - diff,
+      stockEstab: Number(x.stockEstab) + diff
+    } : x);
+  }
+
+  // Actualizar el remito
+  S.remitos = S.remitos.map(x => x.id === id ? {
+    ...x,
+    numero: nuevoNumero,
+    fecha: nuevaFecha,
+    cantidad: nuevaCantidad,
+    proveedor: nuevoProveedor
+  } : x);
+
+  // Actualizar relacionados
+  if (r.linkId){
+    S.facturas = (S.facturas||[]).map(c => c.linkId === r.linkId ? {
+      ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
+    } : c);
+    S.facturasDoc = (S.facturasDoc||[]).map(f => f.linkId === r.linkId ? {
+      ...f, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
+    } : f);
+    S.movimientos = (S.movimientos||[]).map(m => {
+      if (m.linkId !== r.linkId) return m;
+      const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
+      const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
+      const docTxt = `Remito ${nuevoNumero}`;
+      return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
+    });
+  } else {
+    // Sin linkId: actualizar por coincidencia
+    S.movimientos = (S.movimientos||[]).map(m => {
+      if (m.insumoId === r.insumoId && Number(m.cantidad) === Number(r.cantidad) && (m.nota||'').includes(`Remito ${r.numero}`)){
+        const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
+        const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
+        const docTxt = `Remito ${nuevoNumero}`;
+        return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
+      }
+      return m;
+    });
+  }
+
+  saveState(); closeModal(); render();
+  toast('Remito actualizado ✓');
 }
 
 function renderPapelera(){
