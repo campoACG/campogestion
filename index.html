@@ -1574,6 +1574,9 @@ function saveMov(){
 
   // Aplicar movimientos
   for (const { insumo, cantidad } of itemsValidos){
+    // Generamos un linkId común para vincular compra/factura/remito/movimiento
+    const linkId = uid();
+
     if (tipo === 'ingreso_prov'){
       // Suma al proveedor
       S.insumos = S.insumos.map(x => x.id === insumo.id
@@ -1581,7 +1584,7 @@ function saveMov(){
         : x);
       // Registrar compra (sin documento) — siempre se registra
       S.facturas = [{
-        id: uid(), fecha, proveedor,
+        id: uid(), linkId, fecha, proveedor,
         insumoId: insumo.id, insumoNombre: insumo.nombre,
         cantidad, unidad: insumo.unidad, creadaEn: now()
       }, ...S.facturas];
@@ -1595,7 +1598,7 @@ function saveMov(){
     // Si tiene factura, registrarla
     if (docTipo === 'factura'){
       S.facturasDoc = [{
-        id: uid(), fecha, numero: docNum, proveedor,
+        id: uid(), linkId, fecha, numero: docNum, proveedor,
         insumoId: insumo.id, insumoNombre: insumo.nombre,
         cantidad, unidad: insumo.unidad, tipo, creadoEn: now()
       }, ...S.facturasDoc];
@@ -1603,18 +1606,18 @@ function saveMov(){
     // Si tiene remito, registrarlo
     if (docTipo === 'remito'){
       S.remitos = [{
-        id: uid(), fecha, numero: docNum, proveedor,
+        id: uid(), linkId, fecha, numero: docNum, proveedor,
         insumoId: insumo.id, insumoNombre: insumo.nombre,
         cantidad, unidad: insumo.unidad, creadoEn: now()
       }, ...S.remitos];
     }
 
-    // Registrar movimiento
+    // Registrar movimiento (también con linkId)
     const accion = tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
     const notaBase = `${accion} ${proveedor} (${fecha})`;
     const notaCompleta = docTxt ? `${notaBase} — ${docTxt}` : notaBase;
     S.movimientos = [{
-      id:uid(), fecha:now(), insumoId:insumo.id, insumoNombre:insumo.nombre,
+      id:uid(), linkId, fecha:now(), insumoId:insumo.id, insumoNombre:insumo.nombre,
       tipo, cantidad, unidad: insumo.unidad, nota: notaCompleta
     }, ...S.movimientos];
   }
@@ -3578,106 +3581,192 @@ function moverAPapelera(tipo, registro){
   S.papelera = [item, ...(S.papelera || [])];
 }
 
-// Eliminar una compra (con reversión de stock proveedor)
+// Función auxiliar: encuentra registros relacionados por linkId (o por coincidencia si no hay linkId)
+function buscarRelacionados(registro, tipoEliminado){
+  // tipoEliminado: 'compra', 'factura' o 'remito'
+  const result = { compras:[], facturas:[], remitos:[], movimientos:[] };
+  const linkId = registro.linkId;
+
+  if (linkId){
+    // Versión nueva: usamos linkId para encontrar todo
+    result.compras = (S.facturas||[]).filter(x => x.linkId === linkId);
+    result.facturas = (S.facturasDoc||[]).filter(x => x.linkId === linkId);
+    result.remitos = (S.remitos||[]).filter(x => x.linkId === linkId);
+    result.movimientos = (S.movimientos||[]).filter(x => x.linkId === linkId);
+  } else {
+    // Versión antigua (registros sin linkId): buscamos por coincidencia
+    // proveedor + insumoId + cantidad + fecha
+    const matchCompra = c => c.insumoId === registro.insumoId
+      && c.proveedor === registro.proveedor
+      && Number(c.cantidad) === Number(registro.cantidad)
+      && c.fecha === registro.fecha;
+    const matchDoc = d => d.insumoId === registro.insumoId
+      && d.proveedor === registro.proveedor
+      && Number(d.cantidad) === Number(registro.cantidad)
+      && d.fecha === registro.fecha
+      && (d.numero === registro.numero || !registro.numero);
+    const matchMov = m => m.insumoId === registro.insumoId
+      && Number(m.cantidad) === Number(registro.cantidad)
+      && (m.nota || '').includes(registro.proveedor || '')
+      && (registro.numero ? (m.nota || '').includes(registro.numero) : true);
+
+    result.compras = (S.facturas||[]).filter(matchCompra);
+    result.facturas = (S.facturasDoc||[]).filter(matchDoc);
+    result.remitos = (S.remitos||[]).filter(matchDoc);
+    result.movimientos = (S.movimientos||[]).filter(matchMov);
+  }
+  return result;
+}
+
+// Eliminar una compra (con todos sus relacionados)
 async function eliminarCompra(id){
   const c = S.facturas.find(x => x.id === id);
   if (!c) return;
   const ins = S.insumos.find(x => x.id === c.insumoId);
-  if (!ins) {
-    if (!await confirmar(`Eliminar compra de ${c.proveedor} (${fmtN(c.cantidad)} ${c.unidad})? El insumo ya no existe, no se podrá revertir el stock.`)) return;
-    moverAPapelera('compra', c);
-    S.facturas = S.facturas.filter(x => x.id !== id);
-    // Limpiar movimientos asociados
-    S.movimientos = S.movimientos.filter(m => !(m.insumoId === c.insumoId && (m.nota||'').includes(`Compra a ${c.proveedor}`) && Number(m.cantidad) === Number(c.cantidad) && m.fecha.slice(0,10) === c.fecha));
-    saveState(); render();
-    toast('Compra enviada a papelera');
-    return;
-  }
-  // Verificar que haya stock proveedor suficiente para revertir
-  if (Number(c.cantidad) > Number(ins.stockProv)){
+
+  // Buscar todos los registros relacionados
+  const rel = buscarRelacionados(c, 'compra');
+
+  // Verificar stock antes de revertir
+  if (ins && Number(c.cantidad) > Number(ins.stockProv)){
     return toast(`No se puede eliminar: stock proveedor insuficiente de ${ins.nombre} (se intentan quitar ${fmtN(c.cantidad)} ${ins.unidad}, hay ${fmtN(ins.stockProv)}). Tal vez ya se retiró parte al establecimiento.`,'danger');
   }
-  if (!await confirmar(`¿Eliminar compra de ${ins.nombre} a ${c.proveedor} (${fmtN(c.cantidad)} ${ins.unidad})? Se revertirá el stock del proveedor. La compra irá a la 🗑️ Papelera.`)) return;
-  // Revertir stock proveedor
-  S.insumos = S.insumos.map(x => x.id === c.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(c.cantidad) } : x);
-  // Eliminar movimientos de stock asociados (los que mencionan al proveedor con esa cantidad y fecha)
-  S.movimientos = S.movimientos.filter(m => !(m.insumoId === c.insumoId && (m.nota||'').includes(`Compra a ${c.proveedor}`) && Number(m.cantidad) === Number(c.cantidad)));
-  // Mover a papelera
-  moverAPapelera('compra', c);
-  S.facturas = S.facturas.filter(x => x.id !== id);
+
+  // Mensaje informando qué se va a borrar
+  const extras = [];
+  if (rel.facturas.length > 0) extras.push(`${rel.facturas.length} factura${rel.facturas.length>1?'s':''}`);
+  if (rel.remitos.length > 0) extras.push(`${rel.remitos.length} remito${rel.remitos.length>1?'s':''}`);
+  const extraTxt = extras.length>0 ? ` Junto con: ${extras.join(', ')}.` : '';
+
+  if (!await confirmar(`¿Eliminar compra de ${ins?ins.nombre:c.insumoNombre} a ${c.proveedor} (${fmtN(c.cantidad)} ${c.unidad})? Se revertirá el stock del proveedor.${extraTxt} Todo irá a la 🗑️ Papelera.`)) return;
+
+  // Revertir stock
+  if (ins){
+    S.insumos = S.insumos.map(x => x.id === c.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(c.cantidad) } : x);
+  }
+
+  // Eliminar todos los registros relacionados de sus arrays
+  const idsCompras = new Set(rel.compras.map(x => x.id));
+  const idsFacturas = new Set(rel.facturas.map(x => x.id));
+  const idsRemitos = new Set(rel.remitos.map(x => x.id));
+  const idsMovs = new Set(rel.movimientos.map(x => x.id));
+
+  S.facturas = S.facturas.filter(x => !idsCompras.has(x.id));
+  S.facturasDoc = (S.facturasDoc||[]).filter(x => !idsFacturas.has(x.id));
+  S.remitos = (S.remitos||[]).filter(x => !idsRemitos.has(x.id));
+  S.movimientos = S.movimientos.filter(x => !idsMovs.has(x.id));
+
+  // Mover el paquete completo a la papelera
+  moverAPapelera('compra', {
+    ...c,
+    _relacionados: { compras: rel.compras, facturas: rel.facturas, remitos: rel.remitos, movimientos: rel.movimientos }
+  });
+
   saveState(); render();
-  toast('Compra enviada a papelera — stock revertido ✓');
+  toast('Compra y registros asociados enviados a papelera ✓');
 }
 
-// Eliminar una factura (con reversión)
+// Eliminar una factura (con todos sus relacionados)
 async function eliminarFactura(id){
   const f = (S.facturasDoc||[]).find(x => x.id === id);
   if (!f) return;
   const ins = S.insumos.find(x => x.id === f.insumoId);
-  if (!ins){
-    if (!await confirmar(`Eliminar factura ${f.numero}? El insumo ya no existe, no se podrá revertir el stock.`)) return;
-    moverAPapelera('factura', f);
-    S.facturasDoc = S.facturasDoc.filter(x => x.id !== id);
-    saveState(); render();
-    toast('Factura enviada a papelera');
-    return;
-  }
+
+  const rel = buscarRelacionados(f, 'factura');
+
   // Verificar stock según el tipo de movimiento original
-  if (f.tipo === 'ingreso_prov'){
-    if (Number(f.cantidad) > Number(ins.stockProv)){
+  if (ins){
+    if (f.tipo === 'ingreso_prov' && Number(f.cantidad) > Number(ins.stockProv)){
       return toast(`No se puede eliminar: stock proveedor insuficiente de ${ins.nombre}. Tal vez ya se retiró parte al establecimiento.`,'danger');
     }
-  } else if (f.tipo === 'retiro_prov'){
-    if (Number(f.cantidad) > Number(ins.stockEstab)){
+    if (f.tipo === 'retiro_prov' && Number(f.cantidad) > Number(ins.stockEstab)){
       return toast(`No se puede eliminar: stock establecimiento insuficiente de ${ins.nombre}. Tal vez ya se aplicó parte en una orden.`,'danger');
     }
   }
-  if (!await confirmar(`¿Eliminar factura ${f.numero} (${ins.nombre} · ${fmtN(f.cantidad)} ${ins.unidad})? Se revertirá el stock. La factura irá a la 🗑️ Papelera.`)) return;
+
+  const extras = [];
+  if (rel.compras.length > 0) extras.push(`${rel.compras.length} compra${rel.compras.length>1?'s':''}`);
+  if (rel.remitos.length > 0) extras.push(`${rel.remitos.length} remito${rel.remitos.length>1?'s':''}`);
+  const extraTxt = extras.length>0 ? ` Junto con: ${extras.join(', ')}.` : '';
+
+  if (!await confirmar(`¿Eliminar factura ${f.numero} (${ins?ins.nombre:f.insumoNombre} · ${fmtN(f.cantidad)} ${f.unidad})? Se revertirá el stock.${extraTxt} Todo irá a la 🗑️ Papelera.`)) return;
+
   // Revertir stock
-  if (f.tipo === 'ingreso_prov'){
-    S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(f.cantidad) } : x);
-  } else if (f.tipo === 'retiro_prov'){
-    S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) + Number(f.cantidad), stockEstab: Number(x.stockEstab) - Number(f.cantidad) } : x);
+  if (ins){
+    if (f.tipo === 'ingreso_prov'){
+      S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) - Number(f.cantidad) } : x);
+    } else if (f.tipo === 'retiro_prov'){
+      S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) + Number(f.cantidad), stockEstab: Number(x.stockEstab) - Number(f.cantidad) } : x);
+    }
   }
-  // Eliminar movimiento asociado
-  S.movimientos = S.movimientos.filter(m => !(m.insumoId === f.insumoId && (m.nota||'').includes(`Factura ${f.numero}`)));
-  // Mover a papelera
-  moverAPapelera('factura', f);
-  S.facturasDoc = S.facturasDoc.filter(x => x.id !== id);
+
+  // Eliminar relacionados
+  const idsCompras = new Set(rel.compras.map(x => x.id));
+  const idsFacturas = new Set(rel.facturas.map(x => x.id));
+  const idsRemitos = new Set(rel.remitos.map(x => x.id));
+  const idsMovs = new Set(rel.movimientos.map(x => x.id));
+
+  S.facturas = S.facturas.filter(x => !idsCompras.has(x.id));
+  S.facturasDoc = (S.facturasDoc||[]).filter(x => !idsFacturas.has(x.id));
+  S.remitos = (S.remitos||[]).filter(x => !idsRemitos.has(x.id));
+  S.movimientos = S.movimientos.filter(x => !idsMovs.has(x.id));
+
+  // Papelera
+  moverAPapelera('factura', {
+    ...f,
+    _relacionados: { compras: rel.compras, facturas: rel.facturas, remitos: rel.remitos, movimientos: rel.movimientos }
+  });
+
   saveState(); render();
-  toast('Factura enviada a papelera — stock revertido ✓');
+  toast('Factura y registros asociados enviados a papelera ✓');
 }
 
-// Eliminar un remito (con reversión)
+// Eliminar un remito (con todos sus relacionados)
 async function eliminarRemito(id){
   const r = S.remitos.find(x => x.id === id);
   if (!r) return;
   const ins = S.insumos.find(x => x.id === r.insumoId);
-  if (!ins){
-    if (!await confirmar(`Eliminar remito ${r.numero}? El insumo ya no existe, no se podrá revertir el stock.`)) return;
-    moverAPapelera('remito', r);
-    S.remitos = S.remitos.filter(x => x.id !== id);
-    saveState(); render();
-    toast('Remito enviado a papelera');
-    return;
-  }
-  // El remito significa: salida del proveedor + entrada al establecimiento.
-  // Para revertirlo: devolver al proveedor + sacar del establecimiento.
-  if (Number(r.cantidad) > Number(ins.stockEstab)){
+
+  const rel = buscarRelacionados(r, 'remito');
+
+  // El remito significa: salida del proveedor + entrada al establecimiento
+  if (ins && Number(r.cantidad) > Number(ins.stockEstab)){
     return toast(`No se puede eliminar: stock establecimiento insuficiente de ${ins.nombre} (se intentan quitar ${fmtN(r.cantidad)} ${ins.unidad}, hay ${fmtN(ins.stockEstab)}). Tal vez ya se aplicó parte en una orden.`,'danger');
   }
-  if (!await confirmar(`¿Eliminar remito ${r.numero} (${ins.nombre} · ${fmtN(r.cantidad)} ${ins.unidad})? Se revertirá el stock (vuelve al proveedor). El remito irá a la 🗑️ Papelera.`)) return;
+
+  const extras = [];
+  if (rel.compras.length > 0) extras.push(`${rel.compras.length} compra${rel.compras.length>1?'s':''}`);
+  if (rel.facturas.length > 0) extras.push(`${rel.facturas.length} factura${rel.facturas.length>1?'s':''}`);
+  const extraTxt = extras.length>0 ? ` Junto con: ${extras.join(', ')}.` : '';
+
+  if (!await confirmar(`¿Eliminar remito ${r.numero} (${ins?ins.nombre:r.insumoNombre} · ${fmtN(r.cantidad)} ${r.unidad})? Se revertirá el stock (vuelve al proveedor).${extraTxt} Todo irá a la 🗑️ Papelera.`)) return;
+
   // Revertir
-  S.insumos = S.insumos.map(x => x.id === r.insumoId
-    ? { ...x, stockProv: Number(x.stockProv) + Number(r.cantidad), stockEstab: Number(x.stockEstab) - Number(r.cantidad) }
-    : x);
-  // Eliminar movimiento asociado
-  S.movimientos = S.movimientos.filter(m => !(m.insumoId === r.insumoId && (m.nota||'').includes(`Remito ${r.numero}`)));
-  // Mover a papelera
-  moverAPapelera('remito', r);
-  S.remitos = S.remitos.filter(x => x.id !== id);
+  if (ins){
+    S.insumos = S.insumos.map(x => x.id === r.insumoId
+      ? { ...x, stockProv: Number(x.stockProv) + Number(r.cantidad), stockEstab: Number(x.stockEstab) - Number(r.cantidad) }
+      : x);
+  }
+
+  // Eliminar relacionados
+  const idsCompras = new Set(rel.compras.map(x => x.id));
+  const idsFacturas = new Set(rel.facturas.map(x => x.id));
+  const idsRemitos = new Set(rel.remitos.map(x => x.id));
+  const idsMovs = new Set(rel.movimientos.map(x => x.id));
+
+  S.facturas = S.facturas.filter(x => !idsCompras.has(x.id));
+  S.facturasDoc = (S.facturasDoc||[]).filter(x => !idsFacturas.has(x.id));
+  S.remitos = (S.remitos||[]).filter(x => !idsRemitos.has(x.id));
+  S.movimientos = S.movimientos.filter(x => !idsMovs.has(x.id));
+
+  // Papelera
+  moverAPapelera('remito', {
+    ...r,
+    _relacionados: { compras: rel.compras, facturas: rel.facturas, remitos: rel.remitos, movimientos: rel.movimientos }
+  });
+
   saveState(); render();
-  toast('Remito enviado a papelera — stock revertido ✓');
+  toast('Remito y registros asociados enviados a papelera ✓');
 }
 
 function renderPapelera(){
@@ -3736,13 +3825,17 @@ async function restaurarPapelera(itemId){
   if (!tipoInfo) return toast('Tipo desconocido','danger');
 
   const arrayName = tipoInfo.array;
+  // Crear una versión "limpia" de los datos (sin el campo _relacionados que es solo metadata para la papelera)
+  const datosLimpios = { ...item.datos };
+  delete datosLimpios._relacionados;
+
   // Verificar si ya existe uno con ese ID (raro pero por las dudas)
-  const existe = (S[arrayName] || []).some(x => x.id === item.datos.id);
+  const existe = (S[arrayName] || []).some(x => x.id === datosLimpios.id);
   if (existe){
     if (!await confirmar('Ya existe un elemento con el mismo ID. ¿Restaurar de todas formas? Se actualizará el existente.', {textoConfirmar:'Restaurar', tipoConfirmar:'primary'})) return;
-    S[arrayName] = (S[arrayName] || []).map(x => x.id === item.datos.id ? item.datos : x);
+    S[arrayName] = (S[arrayName] || []).map(x => x.id === datosLimpios.id ? datosLimpios : x);
   } else {
-    S[arrayName] = [item.datos, ...(S[arrayName] || [])];
+    S[arrayName] = [datosLimpios, ...(S[arrayName] || [])];
   }
 
   // Si era una orden, hay que descontar el stock de nuevo (porque al eliminarla lo devolvimos)
@@ -3795,6 +3888,7 @@ async function restaurarPapelera(itemId){
   }
 
   // Si era una compra (ingreso a proveedor), volvemos a sumar stockProv
+  // y restauramos los registros relacionados (factura/remito/movimiento)
   if (item.tipo === 'compra'){
     const c = item.datos;
     S.insumos = S.insumos.map(ins => {
@@ -3803,10 +3897,17 @@ async function restaurarPapelera(itemId){
       }
       return ins;
     });
+    // Restaurar relacionados (si los hay)
+    if (c._relacionados){
+      const r = c._relacionados;
+      if (r.facturas && r.facturas.length) S.facturasDoc = [...r.facturas, ...(S.facturasDoc||[])];
+      if (r.remitos && r.remitos.length) S.remitos = [...r.remitos, ...(S.remitos||[])];
+      if (r.movimientos && r.movimientos.length) S.movimientos = [...r.movimientos, ...(S.movimientos||[])];
+      // La compra base ya fue agregada arriba al array por la lógica genérica
+    }
   }
 
-  // Si era una factura (documento), volvemos a sumar stockProv si era ingreso_prov,
-  // o re-aplicamos el cambio si era retiro_prov
+  // Si era una factura (documento), revertimos el stock y restauramos relacionados
   if (item.tipo === 'factura'){
     const f = item.datos;
     const ins = S.insumos.find(x => x.id === f.insumoId);
@@ -3815,7 +3916,6 @@ async function restaurarPapelera(itemId){
         S.insumos = S.insumos.map(x => x.id === f.insumoId
           ? { ...x, stockProv: Number(x.stockProv) + Number(f.cantidad) } : x);
       } else if (f.tipo === 'retiro_prov'){
-        // Verificar stock proveedor
         if (Number(f.cantidad) > Number(ins.stockProv)){
           return toast(`No se puede restaurar: stock proveedor insuficiente de ${ins.nombre}`,'danger');
         }
@@ -3823,9 +3923,16 @@ async function restaurarPapelera(itemId){
           ? { ...x, stockProv: Number(x.stockProv) - Number(f.cantidad), stockEstab: Number(x.stockEstab) + Number(f.cantidad) } : x);
       }
     }
+    // Restaurar relacionados
+    if (f._relacionados){
+      const r = f._relacionados;
+      if (r.compras && r.compras.length) S.facturas = [...r.compras, ...(S.facturas||[])];
+      if (r.remitos && r.remitos.length) S.remitos = [...r.remitos, ...(S.remitos||[])];
+      if (r.movimientos && r.movimientos.length) S.movimientos = [...r.movimientos, ...(S.movimientos||[])];
+    }
   }
 
-  // Si era un remito, volvemos a aplicar el movimiento de retiro
+  // Si era un remito, volvemos a aplicar el movimiento de retiro y restauramos relacionados
   if (item.tipo === 'remito'){
     const r = item.datos;
     const ins = S.insumos.find(x => x.id === r.insumoId);
@@ -3835,6 +3942,13 @@ async function restaurarPapelera(itemId){
       }
       S.insumos = S.insumos.map(x => x.id === r.insumoId
         ? { ...x, stockProv: Number(x.stockProv) - Number(r.cantidad), stockEstab: Number(x.stockEstab) + Number(r.cantidad) } : x);
+    }
+    // Restaurar relacionados
+    if (r._relacionados){
+      const rel = r._relacionados;
+      if (rel.compras && rel.compras.length) S.facturas = [...rel.compras, ...(S.facturas||[])];
+      if (rel.facturas && rel.facturas.length) S.facturasDoc = [...rel.facturas, ...(S.facturasDoc||[])];
+      if (rel.movimientos && rel.movimientos.length) S.movimientos = [...rel.movimientos, ...(S.movimientos||[])];
     }
   }
 
