@@ -3823,6 +3823,15 @@ function guardarEdicionFactura(id){
   const f = (S.facturasDoc||[]).find(x => x.id === id);
   if (!f) return;
 
+  // Capturar valores ORIGINALES antes de modificar nada
+  const origCantidad = Number(f.cantidad);
+  const origProveedor = f.proveedor;
+  const origFecha = f.fecha;
+  const origNumero = f.numero;
+  const origInsumoId = f.insumoId;
+  const origLinkId = f.linkId;
+  const origTipo = f.tipo;
+
   const nuevoNumero = document.getElementById('ef-numero').value.trim();
   const nuevaFecha = document.getElementById('ef-fecha').value;
   const nuevaCantidad = parseFloat(document.getElementById('ef-cantidad').value);
@@ -3834,19 +3843,19 @@ function guardarEdicionFactura(id){
   if (!nuevoProveedor) return toast('Seleccioná un proveedor','warn');
 
   // Diferencia de cantidad
-  const diff = nuevaCantidad - Number(f.cantidad);
-  const ins = S.insumos.find(x => x.id === f.insumoId);
+  const diff = nuevaCantidad - origCantidad;
+  const ins = S.insumos.find(x => x.id === origInsumoId);
 
   // Validar stock si cambia la cantidad
   if (diff !== 0 && ins){
-    if (f.tipo === 'ingreso_prov'){
+    if (origTipo === 'ingreso_prov'){
       // Si se REDUCE la cantidad de un ingreso, hay que sacar de stockProv (diff < 0 → -diff > 0 a quitar)
       if (diff < 0 && Math.abs(diff) > Number(ins.stockProv)){
         return toast(`No hay stock proveedor suficiente para reducir la cantidad. Hay ${fmtN(ins.stockProv)} ${ins.unidad}, se intentan quitar ${fmtN(Math.abs(diff))} ${ins.unidad}.`,'danger');
       }
       // Aplicar: sumar diff al stockProv (puede ser positivo o negativo)
-      S.insumos = S.insumos.map(x => x.id === f.insumoId ? { ...x, stockProv: Number(x.stockProv) + diff } : x);
-    } else if (f.tipo === 'retiro_prov'){
+      S.insumos = S.insumos.map(x => x.id === origInsumoId ? { ...x, stockProv: Number(x.stockProv) + diff } : x);
+    } else if (origTipo === 'retiro_prov'){
       // Si se AUMENTA la cantidad de un retiro: necesito más stock proveedor para sacar
       if (diff > 0 && diff > Number(ins.stockProv)){
         return toast(`No hay stock proveedor suficiente para aumentar el retiro. Hay ${fmtN(ins.stockProv)} ${ins.unidad}.`,'danger');
@@ -3856,7 +3865,7 @@ function guardarEdicionFactura(id){
         return toast(`No hay stock establecimiento suficiente para reducir el retiro. Hay ${fmtN(ins.stockEstab)} ${ins.unidad}.`,'danger');
       }
       // Aplicar: -diff a stockProv, +diff a stockEstab
-      S.insumos = S.insumos.map(x => x.id === f.insumoId ? {
+      S.insumos = S.insumos.map(x => x.id === origInsumoId ? {
         ...x,
         stockProv: Number(x.stockProv) - diff,
         stockEstab: Number(x.stockEstab) + diff
@@ -3874,32 +3883,43 @@ function guardarEdicionFactura(id){
   } : x);
 
   // Actualizar relacionados (por linkId o por coincidencia)
-  if (f.linkId){
+  if (origLinkId){
     // Versión nueva: usa linkId
-    S.facturas = (S.facturas||[]).map(c => c.linkId === f.linkId ? {
+    S.facturas = (S.facturas||[]).map(c => c.linkId === origLinkId ? {
       ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
     } : c);
-    S.remitos = (S.remitos||[]).map(r => r.linkId === f.linkId ? {
+    S.remitos = (S.remitos||[]).map(r => r.linkId === origLinkId ? {
       ...r, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
     } : r);
     S.movimientos = (S.movimientos||[]).map(m => {
-      if (m.linkId !== f.linkId) return m;
-      // Reconstruir la nota
+      if (m.linkId !== origLinkId) return m;
       const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
       const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
       const docTxt = `Factura ${nuevoNumero}`;
       return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
     });
   } else {
-    // Versión vieja: actualizar por coincidencia
+    // Versión vieja (sin linkId): actualizar por coincidencia usando los valores ORIGINALES
+    // Marcamos solo el PRIMER match para evitar actualizar múltiples registros si hay duplicados
+    let comprasMatched = false;
     S.facturas = (S.facturas||[]).map(c => {
-      if (c.insumoId === f.insumoId && c.proveedor === f.proveedor && Number(c.cantidad) === Number(f.cantidad) && c.fecha === f.fecha){
+      if (!comprasMatched
+        && c.insumoId === origInsumoId
+        && c.proveedor === origProveedor
+        && Number(c.cantidad) === origCantidad
+        && c.fecha === origFecha){
+        comprasMatched = true;
         return { ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor };
       }
       return c;
     });
+    let movMatched = false;
     S.movimientos = (S.movimientos||[]).map(m => {
-      if (m.insumoId === f.insumoId && Number(m.cantidad) === Number(f.cantidad) && (m.nota||'').includes(`Factura ${f.numero}`)){
+      if (!movMatched
+        && m.insumoId === origInsumoId
+        && Number(m.cantidad) === origCantidad
+        && (m.nota||'').includes(`Factura ${origNumero}`)){
+        movMatched = true;
         const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
         const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
         const docTxt = `Factura ${nuevoNumero}`;
@@ -3958,6 +3978,14 @@ function guardarEdicionRemito(id){
   const r = (S.remitos||[]).find(x => x.id === id);
   if (!r) return;
 
+  // Capturar valores ORIGINALES antes de modificar nada
+  const origCantidad = Number(r.cantidad);
+  const origProveedor = r.proveedor;
+  const origFecha = r.fecha;
+  const origNumero = r.numero;
+  const origInsumoId = r.insumoId;
+  const origLinkId = r.linkId;
+
   const nuevoNumero = document.getElementById('er-numero').value.trim();
   const nuevaFecha = document.getElementById('er-fecha').value;
   const nuevaCantidad = parseFloat(document.getElementById('er-cantidad').value);
@@ -3969,12 +3997,9 @@ function guardarEdicionRemito(id){
   if (!nuevoProveedor) return toast('Seleccioná un proveedor','warn');
 
   // Diferencia de cantidad
-  const diff = nuevaCantidad - Number(r.cantidad);
-  const ins = S.insumos.find(x => x.id === r.insumoId);
+  const diff = nuevaCantidad - origCantidad;
+  const ins = S.insumos.find(x => x.id === origInsumoId);
 
-  // Un remito = sale del proveedor, entra al establecimiento
-  // Si se AUMENTA: necesito más stock proveedor para sacar
-  // Si se REDUCE: tengo que sacar del establecimiento y devolver al proveedor (validar establecimiento)
   if (diff !== 0 && ins){
     if (diff > 0 && diff > Number(ins.stockProv)){
       return toast(`No hay stock proveedor suficiente para aumentar el remito. Hay ${fmtN(ins.stockProv)} ${ins.unidad}.`,'danger');
@@ -3983,7 +4008,7 @@ function guardarEdicionRemito(id){
       return toast(`No hay stock establecimiento suficiente para reducir el remito. Hay ${fmtN(ins.stockEstab)} ${ins.unidad}.`,'danger');
     }
     // Aplicar: -diff a stockProv, +diff a stockEstab
-    S.insumos = S.insumos.map(x => x.id === r.insumoId ? {
+    S.insumos = S.insumos.map(x => x.id === origInsumoId ? {
       ...x,
       stockProv: Number(x.stockProv) - diff,
       stockEstab: Number(x.stockEstab) + diff
@@ -4000,24 +4025,29 @@ function guardarEdicionRemito(id){
   } : x);
 
   // Actualizar relacionados
-  if (r.linkId){
-    S.facturas = (S.facturas||[]).map(c => c.linkId === r.linkId ? {
+  if (origLinkId){
+    S.facturas = (S.facturas||[]).map(c => c.linkId === origLinkId ? {
       ...c, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
     } : c);
-    S.facturasDoc = (S.facturasDoc||[]).map(f => f.linkId === r.linkId ? {
+    S.facturasDoc = (S.facturasDoc||[]).map(f => f.linkId === origLinkId ? {
       ...f, fecha: nuevaFecha, cantidad: nuevaCantidad, proveedor: nuevoProveedor
     } : f);
     S.movimientos = (S.movimientos||[]).map(m => {
-      if (m.linkId !== r.linkId) return m;
+      if (m.linkId !== origLinkId) return m;
       const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
       const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
       const docTxt = `Remito ${nuevoNumero}`;
       return { ...m, cantidad: nuevaCantidad, nota: `${notaBase} — ${docTxt}` };
     });
   } else {
-    // Sin linkId: actualizar por coincidencia
+    // Sin linkId: actualizar por coincidencia usando valores ORIGINALES (solo el primero que matchee)
+    let movMatched = false;
     S.movimientos = (S.movimientos||[]).map(m => {
-      if (m.insumoId === r.insumoId && Number(m.cantidad) === Number(r.cantidad) && (m.nota||'').includes(`Remito ${r.numero}`)){
+      if (!movMatched
+        && m.insumoId === origInsumoId
+        && Number(m.cantidad) === origCantidad
+        && (m.nota||'').includes(`Remito ${origNumero}`)){
+        movMatched = true;
         const accion = m.tipo === 'ingreso_prov' ? 'Compra a' : 'Retiro de';
         const notaBase = `${accion} ${nuevoProveedor} (${nuevaFecha})`;
         const docTxt = `Remito ${nuevoNumero}`;
